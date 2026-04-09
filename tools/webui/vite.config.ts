@@ -1,10 +1,14 @@
 import { defineConfig } from 'vite';
+import { functionsMixins } from 'vite-plugin-functions-mixins';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { gzipSync } from 'zlib';
 import { resolve } from 'path';
+
+// Dev proxy target: must match the ace-server port (server.cmd / server.sh use 8085; binary default is 8080).
+const ACE_SERVER = process.env.ACE_SERVER_URL ?? 'http://127.0.0.1:8085';
 
 // git version baked at build time (same format as C++ ACE_VERSION)
 function gitVersion(): string {
@@ -55,7 +59,8 @@ function aceGzipPlugin() {
 }
 
 export default defineConfig({
-	plugins: [svelte(), viteSingleFile(), aceGzipPlugin()],
+	// functionsMixins: @apply mixins in m3-svelte <style> (must run before svelte())
+	plugins: [functionsMixins({ deps: ['m3-svelte'] }), svelte(), viteSingleFile(), aceGzipPlugin()],
 
 	define: {
 		__ACE_VERSION__: JSON.stringify(gitVersion())
@@ -63,13 +68,15 @@ export default defineConfig({
 
 	// dev server: proxy ace-server endpoints
 	server: {
+		// allow tunnels (ngrok, etc.); default only allows localhost and *.localhost
+		allowedHosts: ['.ngrok-free.dev', '.ngrok-free.app', '.ngrok.io', '.loca.lt', '.trycloudflare.com'],
 		proxy: {
-			'/lm': 'http://localhost:8080',
-			'/synth': 'http://localhost:8080',
-			'/understand': 'http://localhost:8080',
-			'/health': 'http://localhost:8080',
-			'/props': 'http://localhost:8080',
-			'/logs': 'http://localhost:8080'
+			'/lm': ACE_SERVER,
+			'/synth': ACE_SERVER,
+			'/understand': ACE_SERVER,
+			'/health': ACE_SERVER,
+			'/props': ACE_SERVER,
+			'/logs': ACE_SERVER
 		}
 	},
 

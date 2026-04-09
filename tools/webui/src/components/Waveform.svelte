@@ -190,10 +190,11 @@
 		const ctx = canvas.getContext('2d');
 		if (!ctx) return;
 
-		const style = getComputedStyle(canvas);
-		const colorDim = style.getPropertyValue('--waveform-dim').trim() || '#555';
-		const colorPlay = style.getPropertyValue('--waveform-play').trim() || '#2ed573';
-		const colorRange = style.getPropertyValue('--waveform-range').trim() || '#ff6b6b';
+		// Explicit colors: canvas fillStyle does not accept unresolved light-dark() from CSS vars.
+		const dark = app.dark;
+		const colorPlay = dark ? '#43f588' : '#006a33';
+		const colorDim = dark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(1, 54, 34, 0.2)';
+		const colorRange = dark ? '#ff716c' : '#b31b25';
 
 		const progress = dur > 0 ? currentTime() / dur : 0;
 		const mid = ch / 2;
@@ -337,20 +338,20 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <canvas
 	bind:this={canvas}
-	class="waveform"
+	class="waveform-canvas"
+	style:height="{WAVEFORM_HEIGHT}px"
 	onpointerdown={onPointerDown}
 	onpointermove={onPointerMove}
 	onpointerup={onPointerUp}
 ></canvas>
 
 <style>
-	.waveform {
+	.waveform-canvas {
 		width: 100%;
-		height: var(--waveform-h, 64px);
 		cursor: pointer;
-		border-radius: 2px;
 		touch-action: none;
 		user-select: none;
-		-webkit-user-select: none;
+		border-radius: var(--m3-shape-extra-small);
+		vertical-align: bottom;
 	}
 </style>

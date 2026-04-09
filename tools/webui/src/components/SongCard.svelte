@@ -1,5 +1,10 @@
 <script lang="ts">
-	import { Play, Square, Pencil, Download, Trash2 } from '@lucide/svelte';
+	import { Button, Card, Chip, Icon } from 'm3-svelte';
+	import iconPlayArrow from '@ktibow/iconset-material-symbols/play-arrow';
+	import iconStop from '@ktibow/iconset-material-symbols/stop';
+	import iconEdit from '@ktibow/iconset-material-symbols/edit';
+	import iconDownload from '@ktibow/iconset-material-symbols/download';
+	import iconDelete from '@ktibow/iconset-material-symbols/delete';
 	import { app, setRequest } from '../lib/state.svelte.js';
 	import { deleteSong } from '../lib/db.js';
 	import type { Song } from '../lib/types.js';
@@ -97,127 +102,135 @@
 	}
 </script>
 
-<div class="card">
-	<div class="card-header">
-		<button class="icon-btn" onclick={toggle} title={playing ? 'Stop' : 'Play'}>
-			{#if playing}
-				<Square size={14} />
-			{:else}
-				<Play size={14} />
-			{/if}
-		</button>
-		<span class="card-name">{song.name}</span>
-		<div class="card-actions">
-			<button class="icon-btn" onclick={downloadAudio} title="Download track"
-				><Download size={14} /> Download</button
-			>
-			<button class="icon-btn" onclick={remove} title="Delete track"
-				><Trash2 size={14} /> Delete</button
-			>
+<div class="song-card-scope">
+<Card variant="outlined">
+	<div class="card-inner">
+		<div class="top-row">
+			<div class="play-btn" class:playing>
+				<Button
+					variant={playing ? 'tonal' : 'text'}
+					iconType="full"
+					onclick={toggle}
+				>
+					<Icon icon={playing ? iconStop : iconPlayArrow} />
+				</Button>
+			</div>
+			<span class="song-name">{song.name}</span>
+			<div class="actions">
+				<Button variant="text" iconType="full" onclick={downloadAudio}>
+					<Icon icon={iconDownload} />
+				</Button>
+				<Button variant="text" iconType="full" onclick={remove}>
+					<Icon icon={iconDelete} />
+				</Button>
+			</div>
+		</div>
+
+		<div class="waveform-block">
+			<Waveform
+				audio={song.audio}
+				bind:playing
+				bind:time
+				bind:dur
+				selectable={isSrc}
+				bind:rangeStart
+				bind:rangeEnd
+			/>
+		</div>
+
+		<div class="bottom-row">
+			<span class="format-badge">{song.format.toUpperCase()}</span>
+			<span class="time-display">
+				{fmtPos(time)} / {fmtDur(dur)}
+			</span>
+			<div class="bottom-actions">
+				<Button variant="text" iconType="full" onclick={load}>
+					<Icon icon={iconEdit} />
+				</Button>
+				<Chip variant="input" selected={isSrc} onclick={toggleSrc}>Src</Chip>
+				<Chip variant="input" selected={isRef} onclick={toggleRef}>Ref</Chip>
+			</div>
 		</div>
 	</div>
-	<Waveform
-		audio={song.audio}
-		bind:playing
-		bind:time
-		bind:dur
-		selectable={isSrc}
-		bind:rangeStart
-		bind:rangeEnd
-	/>
-	<div class="card-footer">
-		<span class="format-badge">{song.format.toUpperCase()}</span>
-		<span class="timecode">{fmtPos(time)} / {fmtDur(dur)}</span>
-		<div class="card-actions">
-			<button class="icon-btn" onclick={load} title="Edit prompt"><Pencil size={14} /> Edit</button>
-			<label class="icon-btn"
-				><input
-					type="checkbox"
-					class="ref-check"
-					checked={isSrc}
-					onchange={toggleSrc}
-					title="Source audio"
-				/> Src</label
-			>
-			<label class="icon-btn"
-				><input
-					type="checkbox"
-					class="ref-check"
-					checked={isRef}
-					onchange={toggleRef}
-					title="Timbre reference"
-				/> Ref</label
-			>
-		</div>
-	</div>
+</Card>
 </div>
 
 <style>
-	.card {
+	/* Neutral chrome; waveform uses green in Waveform.svelte; chips use brand */
+	.song-card-scope {
+		--m3c-primary: var(--m3c-on-surface-variant);
+		--m3c-primary-container: var(--m3c-surface-container-high);
+		--m3c-on-primary-container: var(--m3c-on-surface);
+	}
+	.song-card-scope :global(button.m3-container.input) {
+		--m3c-secondary: var(--ace-brand-secondary);
+		--m3c-secondary-container: var(--ace-brand-secondary-container);
+		--m3c-on-secondary-container: var(--ace-brand-on-secondary-container);
+	}
+	.waveform-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		min-width: 0;
+	}
+	.card-inner {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
 		padding: 0.5rem;
-		border: none;
-		border-radius: 4px;
-		background: var(--bg-card);
 	}
-	.card-header {
+	.top-row {
 		display: flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 0.5rem;
+		min-width: 0;
 	}
-	.card-footer {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
+	.play-btn {
+		flex-shrink: 0;
 	}
-	.card-name {
-		font-size: 0.8rem;
-		white-space: nowrap;
+	.song-name {
+		@apply --m3-body-medium;
+		font-weight: 500;
+		color: var(--m3c-on-surface);
+		flex: 1;
+		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		flex: 1;
+		white-space: nowrap;
+	}
+	.actions {
+		display: flex;
+		flex-shrink: 0;
+		align-items: center;
+		gap: 0.125rem;
+	}
+	.bottom-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-width: 0;
 	}
 	.format-badge {
-		font-size: 0.6rem;
-		font-family: monospace;
-		padding: 0.05rem 0.3rem;
-		border-radius: 2px;
-		background: var(--fg);
-		color: var(--bg);
+		@apply --m3-label-small;
+		background-color: var(--m3c-surface-container-high);
+		color: var(--m3c-on-surface-variant);
+		padding: 0.125rem 0.5rem;
+		border-radius: var(--m3-shape-small);
+		font-family: var(--m3-font-mono);
 		flex-shrink: 0;
 	}
-	.timecode {
-		font-size: 0.7rem;
-		font-family: monospace;
-		color: var(--fg);
-		white-space: nowrap;
+	.time-display {
+		@apply --m3-label-small;
+		font-family: var(--m3-font-mono);
+		color: var(--m3c-on-surface-variant);
 		flex: 1;
+		min-width: 0;
+		white-space: nowrap;
 	}
-	.card-actions {
+	.bottom-actions {
 		display: flex;
 		align-items: center;
-		gap: 0.2rem;
+		gap: 0.25rem;
 		flex-shrink: 0;
-		font-size: 0.8rem;
-	}
-	.icon-btn {
-		background: none;
-		border: none;
-		cursor: pointer;
-		padding: 0.15rem;
-		color: var(--fg);
-		display: flex;
-		align-items: center;
-		gap: 0.2rem;
-		font-size: 0.8rem;
-	}
-	.icon-btn:hover {
-		color: var(--focus);
-	}
-	.ref-check {
-		cursor: pointer;
-		accent-color: var(--focus);
 	}
 </style>

@@ -1,5 +1,25 @@
 <script lang="ts">
-	import { RotateCcw, Download, FolderOpen } from '@lucide/svelte';
+	import { slide } from 'svelte/transition';
+	import { easeEmphasizedDecel } from 'm3-svelte';
+	import {
+		Button, Icon, Chip,
+		TextFieldOutlined,
+		TextFieldOutlinedMultiline,
+		SelectOutlined
+	} from 'm3-svelte';
+	import iconFolderOpen from '@ktibow/iconset-material-symbols/folder-open';
+	import iconDownload from '@ktibow/iconset-material-symbols/download';
+	import iconRestartAlt from '@ktibow/iconset-material-symbols/restart-alt';
+	import iconCasino from '@ktibow/iconset-material-symbols/casino';
+	import iconAutoAwesome from '@ktibow/iconset-material-symbols/auto-awesome';
+	import iconFormatAlignLeft from '@ktibow/iconset-material-symbols/format-align-left';
+	import iconExpandMore from '@ktibow/iconset-material-symbols/expand-more';
+	import iconChevronLeft from '@ktibow/iconset-material-symbols/chevron-left';
+	import iconChevronRight from '@ktibow/iconset-material-symbols/chevron-right';
+	import iconCheck from '@ktibow/iconset-material-symbols/check';
+	import iconRemove from '@ktibow/iconset-material-symbols/remove';
+	import NumericTextFieldOutlined from './NumericTextFieldOutlined.svelte';
+	import AceTextFieldOutlinedMultiline from './AceTextFieldOutlinedMultiline.svelte';
 	import { app, toast, setRequest } from '../lib/state.svelte.js';
 	import { rollDice } from '../lib/dice.js';
 	import {
@@ -145,7 +165,11 @@
 			const blob = new Blob([await file.arrayBuffer()], {
 				type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
 			});
-			const result = await understandAudio(blob);
+			const result = await understandAudio(
+				blob,
+				app.request.lm_model as string,
+				app.request.synth_model as string
+			);
 
 			setRequest(result);
 			app.pendingRequests = [];
@@ -428,12 +452,36 @@
 		}
 	}
 
-	function ph(v: unknown): string {
-		return v != null ? String(v) : '';
-	}
+	let panelModels = $state(true);
+	let panelAdvLM = $state(false);
+	let panelTask = $state(true);
+	let panelFlow = $state(true);
+
+	const slideM3 = (node: Element) => slide(node, { duration: 250, easing: easeEmphasizedDecel });
+
+	let lmModelOptions = $derived(lmModels.map((n: string) => ({ text: n, value: n })));
+	let ditModelOptions = $derived(ditModels.map((n: string) => ({ text: n, value: n })));
+	let loraOptions = $derived([
+		{ text: 'Disabled', value: '' },
+		...(loraStale ? [{ text: String(app.request.lora), value: String(app.request.lora), disabled: true }] : []),
+		...loraList.map((n: string) => ({ text: n, value: n }))
+	]);
+	let taskOptions = [
+		{ text: 'text2music', value: '' },
+		{ text: 'cover', value: TASK_COVER },
+		{ text: 'cover-nofsq', value: TASK_COVER_NOFSQ },
+		{ text: 'repaint', value: TASK_REPAINT },
+		{ text: 'lego', value: TASK_LEGO },
+		{ text: 'extract', value: TASK_EXTRACT },
+		{ text: 'complete', value: TASK_COMPLETE }
+	];
+	let methodOptions = [
+		{ text: 'ODE Euler', value: '' },
+		{ text: 'SDE Stochastic', value: 'sde' }
+	];
 </script>
 
-<form class="request-form" onsubmit={(e) => e.preventDefault()}>
+<form class="form ace-neutral-fields" onsubmit={(e) => e.preventDefault()}>
 	<input
 		type="file"
 		accept=".json,.mp3,.wav"
@@ -441,513 +489,419 @@
 		onchange={onFileSelected}
 		hidden
 	/>
+
 	<div class="toolbar">
-		<button type="button" onclick={importJson} title="Open JSON prompt, MP3 or WAV"
-			><FolderOpen size={14} /> Open</button
-		>
-		<button type="button" onclick={exportJson} title="Save JSON prompt"
-			><Download size={14} /> Save</button
-		>
-		<button type="button" onclick={reset} title="Reset prompt"><RotateCcw size={14} /> Reset</button
-		>
+		<Button variant="outlined" onclick={importJson}>
+			<Icon icon={iconFolderOpen} /> Open
+		</Button>
+		<Button variant="outlined" onclick={exportJson}>
+			<Icon icon={iconDownload} /> Save
+		</Button>
+		<Button variant="outlined" onclick={reset}>
+			<Icon icon={iconRestartAlt} /> Reset
+		</Button>
 	</div>
 
-	<details>
-		<summary>Models</summary>
-		<div class="details-body">
-			<div class="model-row">
-				<span class="model-label">LM</span>
-				<select bind:value={app.request.lm_model}>
-					{#each lmModels as name}
-						<option value={name}>{name}</option>
-					{/each}
-				</select>
-			</div>
-			<div class="model-row">
-				<span class="model-label">DiT</span>
-				<select bind:value={app.request.synth_model}>
-					{#each ditModels as name}
-						<option value={name}>{name}</option>
-					{/each}
-				</select>
-			</div>
-			<div class="model-row">
-				<span class="model-label">LoRA</span>
-				<select bind:value={app.request.lora}>
-					<option value="">Disabled</option>
-					{#if loraStale}
-						<option value={app.request.lora} disabled>{app.request.lora}</option>
-					{/if}
-					{#each loraList as name}
-						<option value={name}>{name}</option>
-					{/each}
-				</select>
-				<input
-					type="text"
-					class="batch-input"
-					placeholder="1.0"
-					bind:value={app.request.lora_scale}
+	<div class="ace-panel">
+		<button class="panel-header" type="button" onclick={() => (panelModels = !panelModels)}>
+			<span class="chevron" class:open={panelModels}><Icon icon={iconExpandMore} size={18} /></span>
+			Models
+		</button>
+		{#if panelModels}
+			<div class="panel-body" transition:slideM3>
+				<SelectOutlined
+					label="LM model"
+					options={lmModelOptions.length > 0 ? lmModelOptions : [{text: 'Loading...', value: ''}]}
+					value={app.request.lm_model || ''}
+					onchange={(e) => { app.request.lm_model = (e.target as HTMLSelectElement).value; }}
 				/>
-			</div>
-		</div>
-	</details>
-
-	<div class="section-title">Name</div>
-	<input type="text" bind:value={app.name} placeholder="Untitled" />
-
-	<div class="section-title">Caption</div>
-	<textarea
-		rows="8"
-		placeholder="Upbeat pop rock with driving guitars... (the only required field, may be enriched by the LM)"
-		bind:value={app.request.caption}
-	></textarea>
-
-	<div class="section-title">Lyrics</div>
-	<textarea
-		rows="8"
-		placeholder="Write your own lyrics, type [Instrumental], or leave empty to let the LM create them..."
-		bind:value={app.request.lyrics}
-	></textarea>
-
-	<div class="meta-grid">
-		<label
-			>Language <input
-				type="text"
-				placeholder={ph(d?.vocal_language)}
-				bind:value={app.request.vocal_language}
-			/></label
-		>
-		<label>BPM <input type="text" placeholder={ph(d?.bpm)} bind:value={app.request.bpm} /></label>
-		<label
-			>Duration <input
-				type="text"
-				placeholder={ph(d?.duration)}
-				bind:value={app.request.duration}
-			/></label
-		>
-		<label
-			>Key <input
-				type="text"
-				placeholder={ph(d?.keyscale)}
-				bind:value={app.request.keyscale}
-			/></label
-		>
-		<label
-			>Time sig <input
-				type="text"
-				placeholder={ph(d?.timesignature)}
-				bind:value={app.request.timesignature}
-			/></label
-		>
-	</div>
-
-	<div class="lm-row">
-		<button type="button" disabled={busy} onclick={dice}>Dice</button>
-		<button type="button" disabled={busy} onclick={inspire}>Inspire</button>
-		<button type="button" disabled={busy} onclick={format}>Format</button>
-	</div>
-
-	<details>
-		<summary>Advanced LM</summary>
-		<div class="details-body">
-			<div class="meta-grid">
-				<label
-					>Temperature <input
-						type="text"
-						placeholder={ph(d?.lm_temperature)}
-						bind:value={app.request.lm_temperature}
-					/></label
-				>
-				<label
-					>CFG scale <input
-						type="text"
-						placeholder={ph(d?.lm_cfg_scale)}
-						bind:value={app.request.lm_cfg_scale}
-					/></label
-				>
-				<label
-					>Top P <input
-						type="text"
-						placeholder={ph(d?.lm_top_p)}
-						bind:value={app.request.lm_top_p}
-					/></label
-				>
-				<label
-					>Top K <input
-						type="text"
-						placeholder={ph(d?.lm_top_k)}
-						bind:value={app.request.lm_top_k}
-					/></label
-				>
-			</div>
-			<label
-				>Negative prompt
-				<textarea
-					rows="4"
-					placeholder="Styles or instruments to steer away from, e.g. saxophone, autotune, screaming, low quality..."
-					bind:value={app.request.lm_negative_prompt}
-				></textarea>
-			</label>
-			<label
-				>Audio codes
-				<textarea
-					rows="4"
-					placeholder="Filled by Compose, or paste for dit-only"
-					bind:value={app.request.audio_codes}
-				></textarea>
-			</label>
-		</div>
-	</details>
-
-	<div class="model-row">
-		<span class="model-label">Batch</span>
-		<input
-			type="number"
-			class="batch-input"
-			min="1"
-			max={app.props?.cli?.max_batch || 9}
-			bind:value={app.request.lm_batch_size}
-		/>
-		<span class="spacer"></span>
-		<span class="row-label">Pending</span>
-		<div class="pending-nav">
-			<button type="button" class="nav-btn" onclick={() => switchPending(-1)}>&lt;</button>
-			<span class="nav-label"
-				>{app.pendingRequests.length > 0 ? app.pendingIndex + 1 : 0} / {app.pendingRequests
-					.length}</span
-			>
-			<button type="button" class="nav-btn" onclick={() => switchPending(1)}>&gt;</button>
-		</div>
-	</div>
-
-	<button type="button" disabled={busy} onclick={compose}>Compose</button>
-
-	<details open>
-		<summary>Task</summary>
-		<div class="details-body">
-			<div class="model-row">
-				<span class="model-label">Type</span>
-				<select
-					value={taskType}
-					onchange={(e) => {
-						app.request.task_type = e.currentTarget.value;
-					}}
-				>
-					<option value="">text2music</option>
-					<option value={TASK_COVER}>cover</option>
-					<option value={TASK_COVER_NOFSQ}>cover-nofsq</option>
-					<option value={TASK_REPAINT}>repaint</option>
-					<option value={TASK_LEGO}>lego</option>
-					<option value={TASK_EXTRACT}>extract</option>
-					<option value={TASK_COMPLETE}>complete</option>
-				</select>
-			</div>
-			<div class="model-row track-row">
-				<span class="model-label">Track</span>
-				<div class="track-grid">
-					{#each TRACK_NAMES as name}
-						<button
-							type="button"
-							class="track-pill"
-							class:active={selectedTracks.has(name)}
-							disabled={!needsTrack}
-							onclick={() => toggleTrack(name)}>{name}</button
-						>
-					{/each}
+				<SelectOutlined
+					label="DiT model"
+					options={ditModelOptions.length > 0 ? ditModelOptions : [{text: 'Loading...', value: ''}]}
+					value={app.request.synth_model || ''}
+					onchange={(e) => { app.request.synth_model = (e.target as HTMLSelectElement).value; }}
+				/>
+				<div class="lora-row">
+					<div class="lora-select">
+						<SelectOutlined
+							label="LoRA"
+							options={loraOptions}
+							value={app.request.lora || ''}
+							onchange={(e) => { app.request.lora = (e.target as HTMLSelectElement).value; }}
+						/>
+					</div>
+					<div class="lora-scale">
+						<NumericTextFieldOutlined label="Scale" bind:value={app.request.lora_scale} />
+					</div>
 				</div>
 			</div>
-		</div>
-	</details>
+		{/if}
+	</div>
 
-	<details open>
-		<summary>Flow matching parameters</summary>
-		<div class="details-body">
-			<div class="meta-grid">
-				<label
-					>Steps <input
-						type="text"
-						placeholder={ph(dp?.inference_steps)}
-						bind:value={app.request.inference_steps}
-					/></label
-				>
-				<label
-					>Cover strength <input
-						type="text"
-						placeholder={ph(d?.audio_cover_strength)}
-						bind:value={app.request.audio_cover_strength}
-					/></label
-				>
-				<label
-					>Cover noise <input
-						type="text"
-						placeholder={ph(d?.cover_noise_strength)}
-						bind:value={app.request.cover_noise_strength}
-					/></label
-				>
-				<label
-					>Repaint strength <input
-						type="text"
-						placeholder={ph(d?.repaint_strength)}
-						bind:value={app.request.repaint_strength}
-					/></label
-				>
-				<label
-					>CFG scale <input
-						type="text"
-						placeholder={ph(dp?.guidance_scale)}
-						bind:value={app.request.guidance_scale}
-					/></label
-				>
-				<label
-					>Shift <input
-						type="text"
-						placeholder={ph(dp?.shift)}
-						bind:value={app.request.shift}
-					/></label
-				>
-				<label
-					>Method <select
-						value={app.request.infer_method || ''}
-						onchange={(e) => {
-							app.request.infer_method = e.currentTarget.value;
-						}}
-					>
-						<option value="">ODE Euler</option>
-						<option value="sde">SDE Stochastic</option>
-					</select></label
-				>
-				<label
-					>Seed <input type="text" placeholder={ph(d?.seed)} bind:value={app.request.seed} /></label
-				>
+	<TextFieldOutlined label="Name" bind:value={app.name} />
+	<AceTextFieldOutlinedMultiline label="Caption" bind:value={app.request.caption} />
+	<AceTextFieldOutlinedMultiline label="Lyrics" bind:value={app.request.lyrics} />
+
+	<div class="grid-2col">
+		<TextFieldOutlined label="Language" bind:value={app.request.vocal_language} />
+		<NumericTextFieldOutlined label="BPM" bind:value={app.request.bpm} />
+		<NumericTextFieldOutlined label="Duration" bind:value={app.request.duration} />
+		<TextFieldOutlined label="Key" bind:value={app.request.keyscale} />
+		<TextFieldOutlined label="Time sig" bind:value={app.request.timesignature} />
+	</div>
+
+	<div class="toolbar ace-primary-strip">
+		<Button variant="tonal" disabled={busy} onclick={dice}>
+			<Icon icon={iconCasino} /> Dice
+		</Button>
+		<Button variant="tonal" disabled={busy} onclick={inspire}>
+			<Icon icon={iconAutoAwesome} /> Inspire
+		</Button>
+		<Button variant="tonal" disabled={busy} onclick={format}>
+			<Icon icon={iconFormatAlignLeft} /> Format
+		</Button>
+	</div>
+
+	<div class="ace-panel">
+		<button class="panel-header" type="button" onclick={() => (panelAdvLM = !panelAdvLM)}>
+			<span class="chevron" class:open={panelAdvLM}><Icon icon={iconExpandMore} size={18} /></span>
+			Advanced LM
+		</button>
+		{#if panelAdvLM}
+			<div class="panel-body" transition:slideM3>
+				<div class="grid-2col">
+					<NumericTextFieldOutlined label="Temperature" bind:value={app.request.lm_temperature} />
+					<NumericTextFieldOutlined label="CFG scale" bind:value={app.request.lm_cfg_scale} />
+					<NumericTextFieldOutlined label="Top P" bind:value={app.request.lm_top_p} />
+					<NumericTextFieldOutlined label="Top K" bind:value={app.request.lm_top_k} />
+				</div>
+				<TextFieldOutlinedMultiline label="Negative prompt" bind:value={app.request.lm_negative_prompt} />
+				<TextFieldOutlinedMultiline label="Audio codes" bind:value={app.request.audio_codes} />
 			</div>
-		</div>
-	</details>
-
-	<div class="model-row">
-		<span class="model-label">Batch</span>
-		<input
-			type="number"
-			class="batch-input"
-			min="1"
-			max="9"
-			bind:value={app.request.synth_batch_size}
-		/>
-		<span class="spacer"></span>
-		<span class="row-label">Format</span>
-		<label class="radio-label">
-			<input type="radio" name="format" value="mp3" bind:group={app.format} /> MP3
-		</label>
-		<label class="radio-label">
-			<input type="radio" name="format" value="wav" bind:group={app.format} /> WAV
-		</label>
+		{/if}
 	</div>
 
-	<div class="model-row cond-row">
-		<span class="model-label">Cond</span>
-		<div class="track-grid">
-			<span class="dit-ind" class:on={hasCodes}>LM codes</span>
-			<span class="dit-ind" class:on={hasSrc}>Src audio</span>
-			<span class="dit-ind" class:on={hasRange}>Range</span>
-			<span class="dit-ind" class:on={hasRef}>Timbre ref</span>
+	<div class="inline-row">
+		<div class="batch-field"><NumericTextFieldOutlined label="Batch" bind:value={app.request.lm_batch_size} /></div>
+		<div class="spacer"></div>
+		<span class="inline-label">Pending</span>
+		<div class="pending-nav">
+			<Button variant="text" iconType="full" onclick={() => switchPending(-1)}>
+				<Icon icon={iconChevronLeft} />
+			</Button>
+			<span class="pending-count">
+				{app.pendingRequests.length > 0 ? app.pendingIndex + 1 : 0} / {app.pendingRequests.length}
+			</span>
+			<Button variant="text" iconType="full" onclick={() => switchPending(1)}>
+				<Icon icon={iconChevronRight} />
+			</Button>
 		</div>
 	</div>
 
-	<button type="button" disabled={busy} onclick={synthesize}>Synthesize</button>
+	<div class="ace-primary-strip fill-width">
+		<Button variant="filled" disabled={busy} onclick={compose}>Compose</Button>
+	</div>
+
+	<div class="ace-panel">
+		<button class="panel-header" type="button" onclick={() => (panelTask = !panelTask)}>
+			<span class="chevron" class:open={panelTask}><Icon icon={iconExpandMore} size={18} /></span>
+			Task
+		</button>
+		{#if panelTask}
+			<div class="panel-body" transition:slideM3>
+				<SelectOutlined
+					label="Type"
+					options={taskOptions}
+					value={taskType}
+					onchange={(e) => { app.request.task_type = (e.target as HTMLSelectElement).value; }}
+				/>
+				<div class="chip-row">
+					<span class="inline-label">Track</span>
+					<div class="chip-wrap">
+						{#each TRACK_NAMES as name}
+							<Chip
+								variant="input"
+								icon={selectedTracks.has(name) ? iconCheck : undefined}
+								selected={selectedTracks.has(name)}
+								disabled={!needsTrack}
+								onclick={() => toggleTrack(name)}
+							>
+								{name}
+							</Chip>
+						{/each}
+					</div>
+				</div>
+			</div>
+		{/if}
+	</div>
+
+	<div class="ace-panel">
+		<button class="panel-header" type="button" onclick={() => (panelFlow = !panelFlow)}>
+			<span class="chevron" class:open={panelFlow}><Icon icon={iconExpandMore} size={18} /></span>
+			Flow matching
+		</button>
+		{#if panelFlow}
+			<div class="panel-body" transition:slideM3>
+				<div class="grid-2col">
+					<NumericTextFieldOutlined label="Steps" bind:value={app.request.inference_steps} />
+					<NumericTextFieldOutlined label="Cover str." bind:value={app.request.audio_cover_strength} />
+					<NumericTextFieldOutlined label="Cover noise" bind:value={app.request.cover_noise_strength} />
+					<NumericTextFieldOutlined label="Repaint str." bind:value={app.request.repaint_strength} />
+					<NumericTextFieldOutlined label="CFG scale" bind:value={app.request.guidance_scale} />
+					<NumericTextFieldOutlined label="Shift" bind:value={app.request.shift} />
+					<NumericTextFieldOutlined label="Seed" bind:value={app.request.seed} />
+				</div>
+				<SelectOutlined
+					label="Method"
+					options={methodOptions}
+					value={app.request.infer_method || ''}
+					onchange={(e) => { app.request.infer_method = (e.target as HTMLSelectElement).value; }}
+				/>
+			</div>
+		{/if}
+	</div>
+
+	<div class="inline-row">
+		<div class="batch-field"><NumericTextFieldOutlined label="Batch" bind:value={app.request.synth_batch_size} /></div>
+		<div class="spacer"></div>
+		<span class="inline-label">Format</span>
+		<Chip variant="input" selected={app.format === 'mp3'} onclick={() => (app.format = 'mp3')}>MP3</Chip>
+		<Chip variant="input" selected={app.format === 'wav'} onclick={() => (app.format = 'wav')}>WAV</Chip>
+	</div>
+
+	<div class="chip-row">
+		<span class="inline-label">Cond</span>
+		<div class="chip-wrap">
+			<span class="cond-ind" class:on={hasCodes}>
+				<Icon icon={hasCodes ? iconCheck : iconRemove} size={12} />
+				LM codes
+			</span>
+			<span class="cond-ind" class:on={hasSrc}>
+				<Icon icon={hasSrc ? iconCheck : iconRemove} size={12} />
+				Src audio
+			</span>
+			<span class="cond-ind" class:on={hasRange}>
+				<Icon icon={hasRange ? iconCheck : iconRemove} size={12} />
+				Range
+			</span>
+			<span class="cond-ind" class:on={hasRef}>
+				<Icon icon={hasRef ? iconCheck : iconRemove} size={12} />
+				Timbre ref
+			</span>
+		</div>
+	</div>
+
+	<div class="ace-primary-strip fill-width">
+		<Button variant="filled" disabled={busy} onclick={synthesize}>
+			Synthesize
+		</Button>
+	</div>
 </form>
 
 <style>
-	.request-form {
+	.form {
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
+		gap: 1.25rem;
+		padding-top: 0.25rem;
+		/* Outlined field label “chip” matches surface (fixes harsh white cut-out in light mode) */
+		--m3v-background: var(--m3c-surface);
 	}
+
+	/* Choice chips (Track, Format, …): brand accent */
+	.form.ace-neutral-fields :global(button.m3-container.input) {
+		--m3c-secondary: var(--ace-brand-secondary);
+		--m3c-secondary-container: var(--ace-brand-secondary-container);
+		--m3c-on-secondary-container: var(--ace-brand-on-secondary-container);
+	}
+
+	/* Outlined text fields only — neutral border + focus (pickers keep theme outline below) */
+	.form.ace-neutral-fields :global(.m3-container:has(> input)) {
+		--m3c-primary: var(--m3c-on-surface-variant);
+		--m3c-primary-container: var(--m3c-surface-container-high);
+		--m3c-on-primary-container: var(--m3c-on-surface);
+		--m3c-outline: color-mix(in srgb, var(--m3c-on-surface) 30%, var(--m3c-surface) 70%);
+	}
+	.form.ace-neutral-fields :global(.m3-container:has(> textarea)) {
+		--m3c-primary: var(--m3c-on-surface-variant);
+		--m3c-primary-container: var(--m3c-surface-container-high);
+		--m3c-on-primary-container: var(--m3c-on-surface);
+		--m3c-outline: color-mix(in srgb, var(--m3c-on-surface) 30%, var(--m3c-surface) 70%);
+	}
+
+	/* SelectOutlined pickers: restore brand accent (hover, focus, menu) */
+	.form.ace-neutral-fields :global(.m3-container:has(> select)) {
+		--m3c-primary: var(--ace-brand-primary);
+		--m3c-primary-container: var(--ace-brand-primary-container);
+		--m3c-on-primary-container: var(--ace-brand-on-primary-container);
+	}
+
+	/* Accordion panels use app surface (same as Name/Caption); fields stay visually continuous */
+	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> input)),
+	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> textarea)) {
+		--m3v-background: var(--m3c-surface);
+	}
+	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> input) input),
+	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> textarea) textarea) {
+		background-color: var(--m3c-surface) !important;
+	}
+	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> select)) {
+		--m3v-background: var(--m3c-surface);
+	}
+	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> select) select) {
+		background-color: var(--m3c-surface) !important;
+	}
+	.form.ace-neutral-fields .cond-ind.on {
+		background: var(--m3c-surface-container-highest);
+		color: var(--m3c-on-surface);
+	}
+
+	.form .ace-primary-strip {
+		--m3c-primary: var(--ace-brand-primary);
+		--m3c-primary-container: var(--ace-brand-primary-container);
+		--m3c-on-primary-container: var(--ace-brand-on-primary-container);
+		--m3c-secondary: var(--ace-brand-secondary);
+		--m3c-secondary-container: var(--ace-brand-secondary-container);
+		--m3c-on-secondary-container: var(--ace-brand-on-secondary-container);
+	}
+	.form .ace-primary-strip.fill-width {
+		display: flex;
+		flex-direction: column;
+	}
+	.form .ace-primary-strip.fill-width > :global(*) {
+		width: 100%;
+	}
+
+	/* Toolbar buttons spread evenly */
 	.toolbar {
 		display: flex;
 		gap: 0.5rem;
 	}
-	.toolbar button {
+	.toolbar > :global(*) {
 		flex: 1;
+	}
+
+	/* Expansion panels: same ground as app / Name field (outline + radius only; no extra green fill) */
+	.ace-panel {
+		--m3v-background: var(--m3c-surface);
+		border: 1px solid var(--m3c-outline-variant);
+		border-radius: var(--m3-shape-large);
+		background: var(--m3c-surface);
+		overflow: hidden;
+	}
+	.panel-header {
 		display: flex;
+		width: 100%;
 		align-items: center;
-		justify-content: center;
-		gap: 0.3rem;
-	}
-	label {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		font-size: 0.85rem;
-		color: var(--fg-dim);
-	}
-	.section-title {
-		font-size: 0.85rem;
-		color: var(--fg);
-		font-weight: 600;
-		padding: 0.4rem 0 0;
-	}
-	textarea,
-	input[type='text'],
-	select {
-		font-family: inherit;
-		font-size: 0.9rem;
-		padding: 0.4rem 0.5rem;
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		background: var(--bg-input);
-		color: var(--fg);
-		resize: vertical;
-	}
-	textarea:focus,
-	input:focus {
-		outline: 2px solid var(--focus);
-		outline-offset: -1px;
-	}
-	.meta-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
 		gap: 0.5rem;
-	}
-	details summary {
+		padding: 0.75rem 1rem;
+		border: none;
+		background: transparent;
 		cursor: pointer;
-		font-size: 0.85rem;
-		color: var(--fg);
-		font-weight: 600;
-		padding: 0.4rem 0;
+		user-select: none;
+		@apply --m3-title-small;
+		color: var(--m3c-on-surface);
 	}
-	details summary:hover {
-		color: var(--fg);
+	.panel-header:hover {
+		background: oklch(from var(--m3c-on-surface) l c h / 0.08);
 	}
-	.details-body {
+	.chevron {
+		display: inline-flex;
+		transition: transform 300ms var(--m3-timing-function-emphasized);
+	}
+	.chevron.open {
+		transform: rotate(180deg);
+	}
+	.panel-body {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
-		padding: 0.25rem 0 0.5rem;
+		gap: 1rem;
+		padding: 0 1rem 1rem;
 	}
-	.model-row {
+
+	/* LoRA row: select + scale side by side */
+	.lora-row {
 		display: flex;
-		align-items: center;
-		gap: 0.5rem;
+		gap: 0.75rem;
 	}
-	.model-label {
-		font-size: 0.85rem;
-		color: var(--fg-dim);
-		flex-shrink: 0;
-		width: 2rem;
-	}
-	.model-row select {
+	.lora-select {
 		flex: 1;
 		min-width: 0;
+	}
+	.lora-scale {
+		width: 5.5rem;
+		flex-shrink: 0;
+	}
+
+	/* Make text-field / select containers fill their parent, but not chips or buttons */
+	.form :global(.m3-container:has(> input, > select, > textarea)) {
+		width: 100%;
+		min-width: 0;
+		align-self: stretch !important;
+	}
+
+	/* 2-column grid for small fields */
+	.grid-2col {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 1rem;
+	}
+
+	/* Inline row for batch/pending/format */
+	.inline-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.inline-label {
+		@apply --m3-label-large;
+		color: var(--m3c-on-surface-variant);
+		flex-shrink: 0;
+	}
+	.batch-field {
+		width: 5.5rem;
+		flex-shrink: 0;
 	}
 	.spacer {
 		flex: 1;
 	}
-	.row-label {
-		font-size: 0.85rem;
-		color: var(--fg-dim);
-		flex-shrink: 0;
-	}
-	.radio-label {
-		flex-direction: row;
-		align-items: center;
-		gap: 0.2rem;
-		font-size: 0.85rem;
-		color: var(--fg-dim);
-		cursor: pointer;
-	}
-	.batch-input {
-		padding: 0.2rem 0.3rem;
-		font-size: 0.8rem;
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		background: var(--bg-input);
-		color: var(--fg);
-	}
-	input.batch-input {
-		width: 3rem;
-		text-align: center;
-	}
 	.pending-nav {
 		display: flex;
 		align-items: center;
-		gap: 0.4rem;
 	}
-	.nav-btn {
-		padding: 0.15rem 0.4rem !important;
-		font-size: 0.75rem !important;
-		min-width: 0 !important;
+	.pending-count {
+		@apply --m3-label-medium;
+		font-family: var(--m3-font-mono);
+		color: var(--m3c-on-surface);
 	}
-	.nav-label {
-		font-size: 0.75rem;
-		font-family: monospace;
-		color: var(--fg);
-	}
-	button {
-		padding: 0.5rem 1rem;
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		background: var(--bg-btn);
-		color: var(--fg);
-		cursor: pointer;
-		font-size: 0.85rem;
-	}
-	button:hover:not(:disabled) {
-		background: var(--bg-btn-hover);
-	}
-	button:disabled {
-		opacity: 0.4;
-	}
-	.dit-ind {
-		padding: 0.15rem 0.4rem;
-		border-radius: 4px;
-		font-size: 0.8rem;
-		white-space: nowrap;
-		background: var(--bg-err, #c0392b);
-		color: #fff;
-		opacity: 0.6;
-		text-align: center;
-		flex: 1;
-	}
-	.dit-ind.on {
-		background: var(--bg-ok, #27ae60);
-		opacity: 1;
-	}
-	.track-row,
-	.cond-row {
-		align-items: flex-start;
-	}
-	.track-row .model-label,
-	.cond-row .model-label {
-		padding-top: 0.2rem;
-	}
-	.track-grid {
+
+	/* Chip rows */
+	.chip-row {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 0.3rem;
-		flex: 1;
-	}
-	.track-pill {
-		padding: 0.2rem 0.5rem;
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		font-size: 0.8rem;
-		font-family: inherit;
-		cursor: pointer;
-		background: var(--bg-input);
-		color: var(--fg-dim);
-		text-align: center;
-		flex: 1;
-		max-width: 33%;
-	}
-	.track-pill.active {
-		background: var(--bg-btn-hover);
-		color: var(--fg);
-		border-color: var(--focus);
-	}
-	.lm-row {
-		display: flex;
+		align-items: start;
 		gap: 0.5rem;
 	}
-	.lm-row button {
+	.chip-row > .inline-label {
+		padding-top: 0.5rem;
+	}
+	.chip-wrap {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.375rem;
 		flex: 1;
+		min-width: 0;
+	}
+
+	/* Condition indicators */
+	.cond-ind {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.25rem 0.625rem;
+		border-radius: var(--m3-shape-small);
+		@apply --m3-label-small;
+		white-space: nowrap;
+		background: var(--m3c-surface-container-high);
+		color: oklch(from var(--m3c-on-surface-variant) l c h / 0.6);
 	}
 </style>

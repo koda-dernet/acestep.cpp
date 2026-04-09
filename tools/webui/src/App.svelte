@@ -1,5 +1,10 @@
 <script lang="ts">
-	import { Volume2 } from '@lucide/svelte';
+	import { Button, Icon, Slider } from 'm3-svelte';
+	import iconLightMode from '@ktibow/iconset-material-symbols/light-mode';
+	import iconDarkMode from '@ktibow/iconset-material-symbols/dark-mode';
+	import iconVolumeUp from '@ktibow/iconset-material-symbols/volume-up';
+	import iconVolumeDown from '@ktibow/iconset-material-symbols/volume-down';
+	import iconVolumeOff from '@ktibow/iconset-material-symbols/volume-off';
 	import { app } from './lib/state.svelte.js';
 	import { props } from './lib/api.js';
 	import { getAllSongs } from './lib/db.js';
@@ -28,36 +33,46 @@
 		return () => clearInterval(id);
 	});
 
-	function onVolume(e: Event) {
-		app.volume = Number((e.target as HTMLInputElement).value);
+	function toggleDark() {
+		app.dark = !app.dark;
 	}
 
-	// sync dark/light class on <html> so CSS variables switch
+	let volumeIcon = $derived(
+		app.volume === 0 ? iconVolumeOff : app.volume < 0.5 ? iconVolumeDown : iconVolumeUp
+	);
+
+	// sync dark/light on documentElement (colorScheme for M3 light-dark tokens)
 	$effect(() => {
-		document.documentElement.classList.toggle('dark', app.dark);
-		document.documentElement.classList.toggle('light', !app.dark);
+		document.documentElement.style.colorScheme = app.dark ? 'dark' : 'light';
 	});
 </script>
 
-<div class="ace-app">
-	<header>
-		<span class="header-label">acestep.cpp</span>
-		<span class="header-version">{__ACE_VERSION__}</span>
-		<div class="spacer"></div>
-		<label class="dark-toggle">
-			<input type="checkbox" bind:checked={app.dark} /> Dark
-		</label>
-		<div class="volume">
-			<Volume2 size={14} />
-			<input type="range" min="0" max="1" step="0.01" value={app.volume} oninput={onVolume} />
+<div class="root">
+	<header class="header">
+		<div class="header-brand">
+			<span class="app-name">acestep.cpp</span>
+			<span class="app-version">{__ACE_VERSION__}</span>
 		</div>
+
+		<div class="spacer"></div>
+
+		<div class="volume-control">
+			<Icon icon={volumeIcon} size={18} />
+			<div class="volume-slider">
+				<Slider bind:value={app.volume} min={0} max={1} step="any" size="xs" showValue={false} endStops={false} />
+			</div>
+		</div>
+
+		<Button variant="text" iconType="full" onclick={toggleDark}>
+			<Icon icon={app.dark ? iconLightMode : iconDarkMode} />
+		</Button>
 	</header>
 
-	<main>
-		<section class="panel form-panel">
+	<main class="main">
+		<section class="panel panel-form">
 			<RequestForm />
 		</section>
-		<section class="panel songs-panel">
+		<section class="panel panel-songs">
 			<SongList />
 		</section>
 	</main>
@@ -66,129 +81,91 @@
 <Toast />
 
 <style>
-	:global(:root) {
-		--bg: #1a1a1a;
-		--bg-input: #2a2a2a;
-		--bg-card: #242424;
-		--bg-btn: #333;
-		--bg-btn-hover: #444;
-		--fg: #eee;
-		--fg-dim: #999;
-		--border: #3a3a3a;
-		--focus: #2ed573;
-		--error: #c0392b;
-		--ok: #27ae60;
-		--waveform-dim: #555;
-		--waveform-play: #2ed573;
-		--waveform-range: #ff6b6b;
-		color-scheme: dark;
-	}
-	:global(:root.light) {
-		--bg: #f5f5f5;
-		--bg-input: #fff;
-		--bg-card: #fff;
-		--bg-btn: #e0e0e0;
-		--bg-btn-hover: #d0d0d0;
-		--fg: #000;
-		--fg-dim: #666;
-		--border: #ccc;
-		--focus: #27ae60;
-		--error: #c0392b;
-		--ok: #27ae60;
-		--waveform-dim: #ccc;
-		--waveform-play: #27ae60;
-		--waveform-range: #e74c3c;
-		color-scheme: light;
-	}
-	:global(*, *::before, *::after) {
-		box-sizing: border-box;
-		margin: 0;
-	}
-	:global(body) {
-		font-family:
-			system-ui,
-			-apple-system,
-			sans-serif;
-		background: var(--bg);
-		color: var(--fg);
-		min-height: 100dvh;
-	}
-	.ace-app {
+	.root {
 		display: flex;
 		flex-direction: column;
 		min-height: 100dvh;
+		background: var(--m3c-surface);
 	}
-	header {
+	.header {
 		display: flex;
 		align-items: center;
-		gap: 0.6rem;
-		padding: 1rem 1rem;
-		border-bottom: none;
+		gap: 0.5rem;
+		padding: 0.25rem 1rem;
+		background: var(--m3c-surface-container-low);
+		flex-shrink: 0;
 	}
-	.header-label {
-		font-size: 1.1rem;
-		font-weight: 600;
-		color: var(--fg);
+	.header-brand {
+		display: flex;
+		align-items: baseline;
+		gap: 0.35rem;
+		flex-wrap: wrap;
+		min-width: 0;
 	}
-	.header-version {
-		font-size: 0.7rem;
-		color: var(--fg-dim);
-		align-self: flex-end;
+	.app-name {
+		@apply --m3-title-medium;
+		font-weight: 700;
+		color: var(--m3c-on-surface);
+		line-height: 1.2;
+	}
+	.app-version {
+		font-size: 0.6875rem;
+		line-height: 1.15;
+		font-weight: 500;
+		color: var(--m3c-on-surface-variant);
+		letter-spacing: 0.02em;
 	}
 	.spacer {
 		flex: 1;
 	}
-	.dark-toggle {
+	.volume-control {
 		display: flex;
 		align-items: center;
-		gap: 0.3rem;
-		font-size: 0.75rem;
-		color: var(--fg-dim);
-		cursor: pointer;
+		gap: 0.25rem;
+		color: var(--m3c-on-surface-variant);
 	}
-	.dark-toggle {
+	.volume-slider {
+		width: 10rem;
+		transform: scaleY(0.65);
+		--m3c-primary: var(--m3c-on-surface-variant);
+	}
+	.volume-slider :global(.m3-container) {
+		min-inline-size: 0 !important;
+	}
+
+	.main {
 		display: flex;
-		align-items: center;
-		gap: 0.3rem;
-		font-size: 0.75rem;
-		color: var(--fg);
-		cursor: pointer;
-	}
-	.volume {
-		display: flex;
-		align-items: center;
-		gap: 0.3rem;
-		color: var(--fg);
-	}
-	.volume input[type='range'] {
-		width: 80px;
-		cursor: pointer;
-	}
-	main {
 		flex: 1;
-		display: flex;
+		min-height: 0;
 		gap: 1rem;
 		padding: 0 1rem 1rem;
-		background: var(--bg);
 		overflow: hidden;
+		background: var(--m3c-surface);
 	}
 	.panel {
-		background: var(--bg);
+		min-height: 0;
 		overflow-y: auto;
+		overflow-x: hidden;
+		/* Lets M3 outlined labels (slightly above the field box) paint inside the panel without clipping */
+		padding-top: 0.25rem;
+		box-sizing: border-box;
 	}
-	.form-panel {
+	.panel-form {
 		width: 400px;
 		flex-shrink: 0;
 	}
-	.songs-panel {
+	.panel-songs {
 		flex: 1;
+		min-width: 0;
 	}
 	@media (max-width: 800px) {
-		main {
+		.main {
 			flex-direction: column;
 		}
-		.form-panel {
+		.panel-form {
+			max-width: none;
 			width: 100%;
+			flex: none;
 		}
 	}
 </style>
