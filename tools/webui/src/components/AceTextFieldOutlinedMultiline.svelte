@@ -1,11 +1,8 @@
 <script lang="ts">
-	import type { IconifyIcon } from '@iconify/types';
-	import { Icon } from 'm3-svelte';
 	import type { HTMLTextareaAttributes } from 'svelte/elements';
 
 	let {
 		label,
-		leadingIcon,
 		disabled = false,
 		required = false,
 		error = false,
@@ -13,33 +10,38 @@
 		...extra
 	}: {
 		label: string;
-		leadingIcon?: IconifyIcon;
 		disabled?: boolean;
 		required?: boolean;
 		error?: boolean;
 		value?: string;
 	} & HTMLTextareaAttributes = $props();
-	const id = $props.id();
+
+	const uid = $props.id();
+	const inputId = `${uid}-input`;
 </script>
 
 <!--
-  Fork of m3-svelte TextFieldOutlinedMultiline without auto-growing height.
-  Shell padding keeps the floated label clear of the previous field’s border.
-  Inner box defaults to 1:1, vertically resizable; text scrolls inside.
+  Outlined multiline without M3 auto-grow: fixed frame, title inside top of box
+  (same idea as Language/BPM labels, not a border “notch”).
 -->
-<div class="ace-multiline-shell">
+<div class="ace-multiline-field">
 	<div class="ace-multiline-root">
-		<div
-			class="m3-container"
-			class:leading-icon={leadingIcon}
-			class:error
-		>
-			<textarea placeholder=" " bind:value {id} {disabled} {required} {...extra}></textarea>
+		<div class="m3-container ace-multiline-framed" class:error>
 			<div class="layer"></div>
-			<label for={id}>{label}</label>
-			{#if leadingIcon}
-				<Icon icon={leadingIcon} size={24} />
-			{/if}
+			<div class="ace-multiline-stack">
+				<div class="ace-multiline-head">
+					<label class="ace-multiline-head-label" for={inputId}>{label}</label>
+				</div>
+				<textarea
+					id={inputId}
+					class="ace-multiline-body"
+					placeholder=""
+					bind:value
+					{disabled}
+					{required}
+					{...extra}
+				></textarea>
+			</div>
 		</div>
 	</div>
 </div>
@@ -51,16 +53,12 @@
 		}
 	}
 
-	.ace-multiline-shell {
+	.ace-multiline-field {
 		width: 100%;
 		max-width: 100%;
-		/* Space above the outline so the label notch isn’t flush against the prior field */
-		padding-top: 0.5rem;
-		box-sizing: border-box;
+		min-width: 0;
 	}
 
-	/* overflow must stay visible: floated labels sit on the border and paint above the box;
-	   overflow:auto was clipping the top half of the label text. */
 	.ace-multiline-root {
 		width: 100%;
 		max-width: 100%;
@@ -74,67 +72,59 @@
 		box-sizing: border-box;
 	}
 
-	.m3-container {
-		display: inline-flex;
+	.m3-container.ace-multiline-framed {
+		display: flex;
+		flex-direction: column;
 		position: relative;
-		align-items: center;
 		width: 100%;
 		height: 100%;
 		min-height: 0;
 		min-width: 0;
+		overflow: hidden;
+		border-radius: var(--m3-field-outlined-shape);
 		z-index: 0;
 	}
 
-	textarea {
+	.ace-multiline-stack {
+		position: relative;
+		z-index: 1;
+		display: flex;
+		flex-direction: column;
+		flex: 1 1 auto;
+		min-height: 0;
+		min-width: 0;
+		height: 100%;
+	}
+
+	.ace-multiline-head {
+		flex: 0 0 auto;
+		padding: 0.5rem 0.75rem 0.25rem;
+	}
+
+	.ace-multiline-head-label {
+		@apply --m3-label-large;
+		color: var(--error, var(--m3c-on-surface-variant));
+		margin: 0;
+		display: block;
+		cursor: text;
+		/* Same motion as M3 TextFieldOutlined label color (floating label uses extra top/size keys) */
+		transition: color 100ms;
+	}
+
+	.ace-multiline-body {
 		@apply --m3-body-large;
 		@apply --m3-focus-none;
-		position: absolute;
-		inset: 0;
-		z-index: 1;
+		flex: 1 1 auto;
+		min-height: 0;
 		width: 100%;
-		height: 100%;
 		border: none;
-		padding: 1rem;
-		border-radius: var(--m3-field-outlined-shape);
+		padding: 0.25rem 0.75rem 0.75rem;
 		background-color: transparent;
 		color: var(--m3c-on-surface);
 		resize: none;
 		overflow: auto;
 		box-sizing: border-box;
-	}
-
-	label {
-		@apply --m3-body-large;
-		position: absolute;
-		z-index: 2;
-		inset-inline-start: 0.75rem;
-		top: 50%;
-		translate: 0 -50%;
-		color: var(--error, var(--m3c-on-surface-variant));
-		background-color: var(--m3v-background, var(--m3c-surface));
-		padding: 0 0.375rem;
-		textarea:hover ~ & {
-			color: var(--error, var(--m3c-on-surface));
-		}
-		textarea:focus ~ & {
-			color: var(--error, var(--m3c-primary));
-		}
-		textarea:disabled ~ & {
-			color: --translucent(var(--m3c-on-surface), 0.38);
-		}
-		textarea:focus ~ &,
-		textarea:not(:placeholder-shown) ~ & {
-			@apply --m3-body-small;
-			/* Slight inset so ascenders aren’t flush against the clip edge of ancestors (.panel scroll). */
-			top: 0.3125rem;
-		}
-		pointer-events: none;
-		transition:
-			color 100ms,
-			top 100ms,
-			font-size 300ms,
-			line-height 300ms,
-			letter-spacing 300ms;
+		line-height: 1.45;
 	}
 
 	.layer {
@@ -145,52 +135,51 @@
 		border-radius: var(--m3-field-outlined-shape);
 		pointer-events: none;
 		transition: all 100ms;
-		textarea:enabled:hover ~ & {
-			border-color: var(--error, var(--m3c-on-surface));
-		}
-		textarea:enabled:focus ~ & {
-			border-color: var(--error, var(--m3c-primary));
-			border-width: 0.125rem;
-		}
 	}
 
-	.m3-container > :global(svg) {
-		position: relative;
-		margin-inline-start: 0.75rem;
-		color: var(--m3c-on-surface-variant);
-		pointer-events: none;
+	.m3-container:not(.error):not(:has(.ace-multiline-body:disabled)):hover .layer {
+		border-color: var(--error, var(--m3c-on-surface));
 	}
 
-	.leading-icon > textarea {
-		padding-inline-start: 3.25rem;
+	.m3-container:not(.error):focus-within .layer {
+		border-color: var(--error, var(--m3c-primary));
+		border-width: 0.125rem;
 	}
 
-	.leading-icon > textarea:not(:focus):placeholder-shown ~ label {
-		inset-inline-start: 3rem;
+	.m3-container:not(.error):has(.ace-multiline-body:enabled):hover .ace-multiline-head-label {
+		color: var(--error, var(--m3c-on-surface));
+	}
+
+	.m3-container:not(.error):focus-within .ace-multiline-head-label {
+		color: var(--error, var(--m3c-primary));
 	}
 
 	.error {
 		--error: var(--m3c-error);
 	}
 
-	.error > textarea:hover ~ label,
-	.error > textarea:hover ~ .layer {
+	.error:not(:has(.ace-multiline-body:disabled)):hover .layer,
+	.error:focus-within .layer {
 		--error: var(--m3c-on-error-container);
 	}
 
-	textarea:disabled {
+	.error:not(:has(.ace-multiline-body:disabled)):hover .ace-multiline-head-label {
+		--error: var(--m3c-on-error-container);
+	}
+
+	.ace-multiline-body:disabled {
 		color: --translucent(var(--m3c-on-surface), 0.38);
 	}
 
-	textarea:disabled ~ .layer {
+	.m3-container:has(.ace-multiline-body:disabled) .ace-multiline-head-label {
+		color: --translucent(var(--m3c-on-surface), 0.38);
+	}
+
+	.m3-container:has(.ace-multiline-body:disabled) .layer {
 		border-color: --translucent(var(--m3c-on-surface), 0.38);
 	}
 
-	textarea:disabled ~ :global(svg) {
-		color: --translucent(var(--m3c-on-surface), 0.38);
-	}
-
-	.m3-container {
+	.m3-container.ace-multiline-framed {
 		print-color-adjust: exact;
 	}
 </style>

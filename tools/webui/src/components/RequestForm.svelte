@@ -722,7 +722,8 @@
 		--m3c-on-primary-container: var(--m3c-on-surface);
 		--m3c-outline: color-mix(in srgb, var(--m3c-on-surface) 30%, var(--m3c-surface) 70%);
 	}
-	.form.ace-neutral-fields :global(.m3-container:has(> textarea)) {
+	/* :has(textarea) — nested textarea (e.g. AceTextFieldOutlinedMultiline) as well as M3 direct child */
+	.form.ace-neutral-fields :global(.m3-container:has(textarea)) {
 		--m3c-primary: var(--m3c-on-surface-variant);
 		--m3c-primary-container: var(--m3c-surface-container-high);
 		--m3c-on-primary-container: var(--m3c-on-surface);
@@ -738,11 +739,11 @@
 
 	/* Accordion panels use app surface (same as Name/Caption); fields stay visually continuous */
 	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> input)),
-	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> textarea)) {
+	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(textarea)) {
 		--m3v-background: var(--m3c-surface);
 	}
 	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> input) input),
-	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> textarea) textarea) {
+	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(textarea) textarea) {
 		background-color: var(--m3c-surface) !important;
 	}
 	.form.ace-neutral-fields .ace-panel :global(.m3-container:has(> select)) {
