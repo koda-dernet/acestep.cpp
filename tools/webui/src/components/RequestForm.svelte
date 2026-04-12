@@ -63,6 +63,14 @@
 	);
 	let singleTrack = $derived(taskType === TASK_LEGO || taskType === TASK_EXTRACT);
 
+	// fill number fields with server defaults (avoids empty inputs)
+	$effect(() => {
+		if (!d) return;
+		if (app.request.lm_batch_size == null) app.request.lm_batch_size = d.lm_batch_size;
+		if (app.request.synth_batch_size == null) app.request.synth_batch_size = d.synth_batch_size;
+		if (app.request.peak_clip == null) app.request.peak_clip = d.peak_clip;
+	});
+
 	// DiT input indicators
 	let hasCodes = $derived(!!app.request.audio_codes?.trim() && app.srcSongId == null);
 	let hasSrc = $derived(app.srcSongId != null);
@@ -255,6 +263,8 @@
 		if (r.lora && loraList.includes(String(r.lora))) out.lora = String(r.lora);
 		const lora_scale = num(r.lora_scale);
 		if (lora_scale != null) out.lora_scale = lora_scale;
+		const peak_clip = num(r.peak_clip);
+		if (peak_clip != null) out.peak_clip = peak_clip;
 		return out;
 	}
 
@@ -384,6 +394,8 @@
 			// infer_method from form
 			const im = app.request.infer_method || '';
 			if (im) synthParams.infer_method = im;
+			const b = num(app.request.peak_clip);
+			if (b != null) synthParams.peak_clip = b;
 			// model routing from form
 			if (app.request.synth_model) synthParams.synth_model = app.request.synth_model;
 			if (app.request.lora && loraList.includes(String(app.request.lora)))
@@ -428,10 +440,19 @@
 					: await synthGenerate(toSend, app.format);
 			const now = Date.now();
 			const baseName = app.name || 'Untitled';
+
+			// extract DiT variant from model filename
+			// "acestep-v15-xl-turbo-Q8_0.gguf" -> "xl-turbo"
+			const model = String(app.request.synth_model || '');
+			const vm = model.match(/^acestep-v15-(.+?)-(Q\d.*|BF16)\.gguf$/);
+			const variant = vm ? vm[1] : '';
+
 			for (let i = blobs.length - 1; i >= 0; i--) {
 				const r = expanded[i];
+				const task = r.task_type || 'text2music';
+				const suffix = [variant, task].filter((s) => s).join(' ');
 				const song = {
-					name: baseName,
+					name: suffix ? baseName + ' (' + suffix + ')' : baseName,
 					format: app.format,
 					created: now + i,
 					caption: r.caption,
@@ -663,6 +684,7 @@
 
 	<div class="inline-row">
 		<div class="batch-field"><NumericTextFieldOutlined label="Batch" bind:value={app.request.synth_batch_size} /></div>
+		<div class="batch-field peak-clip-field"><NumericTextFieldOutlined label="Peak clip" bind:value={app.request.peak_clip} /></div>
 		<div class="spacer"></div>
 		<span class="inline-label">Format</span>
 		<Chip variant="input" selected={app.format === 'mp3'} onclick={() => (app.format = 'mp3')}>MP3</Chip>
@@ -862,6 +884,9 @@
 	.batch-field {
 		width: 5.5rem;
 		flex-shrink: 0;
+	}
+	.peak-clip-field {
+		width: 6.25rem;
 	}
 	.spacer {
 		flex: 1;

@@ -5,6 +5,7 @@
 // All functions use planar stereo float: [L: T samples][R: T samples].
 // Part of acestep.cpp. MIT license.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -294,21 +295,52 @@ static float * audio_read_48k(const char * path, int * T_out) {
     return resampled;
 }
 
-// peak normalize stereo audio to 0 dBFS in-place.
-// n_total = number of float samples (both channels, so T_audio * 2 for stereo).
-static void audio_normalize(float * audio, int n_total) {
-    float peak = 0.0f;
-    for (int i = 0; i < n_total; i++) {
-        float a = audio[i] < 0.0f ? -audio[i] : audio[i];
-        if (a > peak) {
-            peak = a;
-        }
+// maximize perceived loudness via percentile normalization.
+// peak_clip controls the tradeoff between loudness and clipping:
+//   0   = peak normalization (100.0000th percentile, no clipping)
+//   10  = default (99.9990th percentile, clips top 0.001%)
+//   999 = max (99.9001th percentile, clips top 0.1%)
+// the target percentile is 1.0 - peak_clip/1000000.0.
+// n_total = number of float samples (both channels combined).
+static void audio_normalize(float * audio, int n_total, int peak_clip = 10) {
+    if (n_total <= 0) {
+        return;
     }
-    if (peak > 1e-8f && peak != 1.0f) {
-        float gain = 1.0f / peak;
-        for (int i = 0; i < n_total; i++) {
-            audio[i] *= gain;
+
+    // clamp to valid range
+    if (peak_clip < 0) {
+        peak_clip = 0;
+    }
+    if (peak_clip > 999) {
+        peak_clip = 999;
+    }
+
+    // collect absolute values
+    std::vector<float> absvals((size_t) n_total);
+    for (int i = 0; i < n_total; i++) {
+        absvals[i] = audio[i] < 0.0f ? -audio[i] : audio[i];
+    }
+
+    // partial sort to find the target percentile
+    double pct = 1.0 - (double) peak_clip / 1000000.0;
+    size_t idx = (size_t) ((double) (n_total - 1) * pct);
+    std::nth_element(absvals.begin(), absvals.begin() + idx, absvals.end());
+    float ref = absvals[idx];
+
+    if (ref < 1e-6f) {
+        return;
+    }
+
+    // scale so the target percentile hits 1.0, hard clip the rest
+    float gain = 1.0f / ref;
+    for (int i = 0; i < n_total; i++) {
+        float v = audio[i] * gain;
+        if (v > 1.0f) {
+            v = 1.0f;
+        } else if (v < -1.0f) {
+            v = -1.0f;
         }
+        audio[i] = v;
     }
 }
 
@@ -618,9 +650,9 @@ static bool audio_write_mp3(const char * path, const float * audio, int T_audio,
 // Write audio, auto-detect format from extension.
 // .mp3 -> MP3 encoding at the given kbps (default 128).
 // .wav (or anything else) -> WAV 16-bit PCM.
-// Peak-normalizes to 0 dBFS in-place before writing (single normalization point).
-static bool audio_write(const char * path, float * audio, int T_audio, int sr, int kbps) {
-    audio_normalize(audio, T_audio * 2);
+// Normalizes in place before writing (single normalization point).
+static bool audio_write(const char * path, float * audio, int T_audio, int sr, int kbps, int peak_clip = 10) {
+    audio_normalize(audio, T_audio * 2, peak_clip);
 
     if (audio_io_ends_with(path, ".mp3")) {
         return audio_write_mp3(path, audio, T_audio, sr, (kbps > 0) ? kbps : 128);

@@ -805,7 +805,7 @@ static void handle_synth(const httplib::Request & req, httplib::Response & res) 
             continue;
         }
 
-        audio_normalize(audio[b].samples, audio[b].n_samples * 2);
+        audio_normalize(audio[b].samples, audio[b].n_samples * 2, ace_reqs[0].peak_clip);
 
         if (output_wav) {
             encoded[b] = audio_encode_wav(audio[b].samples, audio[b].n_samples, 48000);
@@ -1206,6 +1206,10 @@ int main(int argc, char ** argv) {
     // setup HTTP server
     httplib::Server svr;
     g_svr = &svr;
+
+    // httplib defaults to 5s which kills long generation requests.
+    svr.set_read_timeout(600);
+    svr.set_write_timeout(600);
 
     // SO_REUSEADDR: allow rebind after TIME_WAIT (normal restart).
     // no SO_REUSEPORT: fail if another process is actively listening.
