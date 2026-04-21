@@ -43,7 +43,15 @@ if not defined VSINSTALL call :try_vs "%ProgramFiles(x86)%\Microsoft Visual Stud
 if not defined VSINSTALL goto :err_no_vs
 
 rem --- 3. Call vcvars64 (x64 host) --------------------------------------
-call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+rem Optional: pin an older MSVC toolset (e.g. 14.39) to work around
+rem nvcc + /Zc:preprocessor bugs on CUDA 12.8 with MSVC 14.44+.
+rem   set ACESTEP_MSVC_VER=14.39
+rem (requires that toolset installed via VS Installer)
+if defined ACESTEP_MSVC_VER (
+  call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=%ACESTEP_MSVC_VER%
+) else (
+  call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+)
 if errorlevel 1 (
   echo [setup-vcvars] ERROR: vcvars64.bat failed. Try ACESTEP_NO_PATH_RESET=1 if your PATH is customized.
   exit /b 1
