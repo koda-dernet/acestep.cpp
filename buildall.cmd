@@ -11,6 +11,8 @@ if errorlevel 1 (
   echo [buildall] ERROR: nvcc not found. Install the CUDA Toolkit.
   exit /b 1
 )
+call "%~dp0pick-cuda-arch.cmd"
+if errorlevel 1 exit /b 1
 if not defined VULKAN_SDK (
   echo [buildall] ERROR: VULKAN_SDK is not set. Install the LunarG Vulkan SDK.
   exit /b 1
@@ -23,6 +25,6 @@ if /i "%ACESTEP_GEN%"=="Visual Studio 17 2022" (
   )
 )
 
-set "ACESTEP_CMAKE_FLAGS=-DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_VULKAN=ON -DGGML_BACKEND_DL=ON"
+set "ACESTEP_CMAKE_FLAGS=-DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_VULKAN=ON -DGGML_BACKEND_DL=ON -DCMAKE_CUDA_ARCHITECTURES=%ACESTEP_CUDA_ARCH%"
 call "%~dp0build-common.cmd"
 exit /b %ERRORLEVEL%

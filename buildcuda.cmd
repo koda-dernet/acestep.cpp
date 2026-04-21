@@ -14,6 +14,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem --- Pick a CMAKE_CUDA_ARCHITECTURES list supported by the installed toolkit ---
+call "%~dp0pick-cuda-arch.cmd"
+if errorlevel 1 exit /b 1
+
 rem --- If using the Visual Studio generator, CUDA also needs its MSBuild ---
 rem --- integration files. Switch to Ninja silently if those are missing.  ---
 if /i "%ACESTEP_GEN%"=="Visual Studio 17 2022" (
@@ -24,6 +28,6 @@ if /i "%ACESTEP_GEN%"=="Visual Studio 17 2022" (
   )
 )
 
-set "ACESTEP_CMAKE_FLAGS=-DGGML_CUDA=ON"
+set "ACESTEP_CMAKE_FLAGS=-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=%ACESTEP_CUDA_ARCH%"
 call "%~dp0build-common.cmd"
 exit /b %ERRORLEVEL%
