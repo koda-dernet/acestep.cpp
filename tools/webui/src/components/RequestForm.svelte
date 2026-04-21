@@ -1,7 +1,8 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { easeEmphasizedDecel } from 'm3-svelte';
 	import {
+		easeEmphasizedDecel,
 		Button, Icon, Chip,
 		TextFieldOutlined,
 		TextFieldOutlinedMultiline,
@@ -18,38 +19,61 @@
 	import iconChevronRight from '@ktibow/iconset-material-symbols/chevron-right';
 	import iconCheck from '@ktibow/iconset-material-symbols/check';
 	import iconRemove from '@ktibow/iconset-material-symbols/remove';
+	import iconClose from '@ktibow/iconset-material-symbols/close';
+	import iconStop from '@ktibow/iconset-material-symbols/stop';
 	import NumericTextFieldOutlined from './NumericTextFieldOutlined.svelte';
 	import AceTextFieldOutlinedMultiline from './AceTextFieldOutlinedMultiline.svelte';
 	import { app, toast, setRequest } from '../lib/state.svelte.js';
 	import { rollDice } from '../lib/dice.js';
 	import {
-		lmGenerate,
-		lmInspire,
-		lmFormat,
-		synthGenerate,
-		synthGenerateWithAudio,
-		understandAudio
+		lmSubmit,
+		lmSubmitInspire,
+		lmSubmitFormat,
+		synthSubmit,
+		synthSubmitWithAudio,
+		pollJob,
+		jobResultJson,
+		jobResultBlobs,
+		cancelJob
 	} from '../lib/api.js';
-	import { putSong } from '../lib/db.js';
+	import { putSong, getAllSongs, saveJob, loadJob, loadJobId, clearJob } from '../lib/db.js';
 	import {
+		TASK_TEXT2MUSIC,
 		TASK_COVER,
 		TASK_COVER_NOFSQ,
 		TASK_REPAINT,
 		TASK_LEGO,
 		TASK_EXTRACT,
 		TASK_COMPLETE,
+		INFER_ODE,
+		INFER_SDE,
+		DCW_MODE_LOW,
+		DCW_MODE_HIGH,
+		DCW_MODE_DOUBLE,
+		DCW_MODE_PIX,
 		TRACK_NAMES
 	} from '../lib/config.js';
+	import {
+		num,
+		buildSparse,
+		clearSection,
+		withCurrentSettings,
+		pickSections
+	} from '../lib/fields.js';
 	import type { AceRequest, Song } from '../lib/types.js';
 
-	let busy = $state(false);
+	let busyLm = $state(false);
+	let busySynth = $state(false);
+	let busy = $derived(busyLm || busySynth);
 	let fileInput: HTMLInputElement;
 
 	let d = $derived(app.props?.default);
 	let ditModels = $derived(app.props?.models.dit ?? []);
 	let lmModels = $derived(app.props?.models.lm ?? []);
-	let loraList = $derived(app.props?.loras ?? []);
-	let loraStale = $derived(!!app.request.lora && !loraList.includes(String(app.request.lora)));
+	let adapterList = $derived(app.props?.adapters ?? []);
+	let adapterStale = $derived(
+		!!app.request.adapter && !adapterList.includes(String(app.request.adapter))
+	);
 	let taskType = $derived(app.request.task_type || '');
 	let dp = $derived(
 		app.props?.presets
@@ -63,19 +87,42 @@
 	);
 	let singleTrack = $derived(taskType === TASK_LEGO || taskType === TASK_EXTRACT);
 
-	// fill number fields with server defaults (avoids empty inputs)
+	// fill number/enum fields with server defaults (avoids empty inputs / out-of-sync dropdowns)
 	$effect(() => {
 		if (!d) return;
 		if (app.request.lm_batch_size == null) app.request.lm_batch_size = d.lm_batch_size;
 		if (app.request.synth_batch_size == null) app.request.synth_batch_size = d.synth_batch_size;
 		if (app.request.peak_clip == null) app.request.peak_clip = d.peak_clip;
+		if (app.request.task_type == null || app.request.task_type === '')
+			app.request.task_type = d.task_type;
+		if (app.request.infer_method == null || app.request.infer_method === '')
+			app.request.infer_method = d.infer_method;
+		if (app.request.dcw_mode == null || app.request.dcw_mode === '')
+			app.request.dcw_mode = d.dcw_mode;
 	});
 
 	// DiT input indicators
 	let hasCodes = $derived(!!app.request.audio_codes?.trim() && app.srcSongId == null);
 	let hasSrc = $derived(app.srcSongId != null);
-	let hasRange = $derived(app.srcRangeStart >= 0 && app.srcRangeEnd > app.srcRangeStart);
+	let hasRange = $derived(app.srcRangeStart != null || app.srcRangeEnd != null);
 	let hasRef = $derived(app.refSongId != null);
+
+	// instrumental mode: checked when lyrics and language match the convention.
+	// any manual edit to either field naturally unchecks via $derived.
+	let instrumental = $derived(
+		String(app.request.lyrics || '').trim() === '[Instrumental]' &&
+			String(app.request.vocal_language || '').trim() === 'unknown'
+	);
+
+	function toggleInstrumental() {
+		if (instrumental) {
+			app.request.lyrics = '';
+			app.request.vocal_language = '';
+		} else {
+			app.request.lyrics = '[Instrumental]';
+			app.request.vocal_language = 'unknown';
+		}
+	}
 
 	// track selection: radio for lego/extract, multi for complete
 	let selectedTracks: Set<string> = $state(new Set());
@@ -105,6 +152,82 @@
 		}
 	});
 
+	// cancel the active pipeline job
+	async function cancelPipeline() {
+		try {
+			if (busySynth) {
+				const synthId = loadJobId('synth');
+				if (synthId) await cancelJob(synthId);
+			} else if (busyLm) {
+				const lmId = loadJobId('lm');
+				if (lmId) await cancelJob(lmId);
+			}
+		} catch {}
+	}
+
+	// resume polling for any pending jobs persisted in localStorage
+	onMount(() => {
+		const lmId = loadJobId('lm');
+		if (lmId) {
+			busyLm = true;
+			pollJob(lmId)
+				.then(() => jobResultJson(lmId))
+				.then((results) => {
+					clearJob('lm');
+					app.pendingRequests = results;
+					app.pendingIndex = 0;
+					if (results.length > 0) {
+						setRequest(results[0]);
+					}
+				})
+				.catch(() => {
+					clearJob('lm');
+				})
+				.finally(() => {
+					busyLm = false;
+				});
+		}
+
+		const synthJob = loadJob('synth');
+		if (synthJob) {
+			busySynth = true;
+			pollJob(synthJob.id)
+				.then(() => jobResultBlobs(synthJob.id))
+				.then(async (blobs) => {
+					clearJob('synth');
+					const now = Date.now();
+					for (let i = blobs.length - 1; i >= 0; i--) {
+						const t = synthJob.tracks[i] || {
+							caption: '',
+							seed: 0,
+							duration: 0,
+							task: '',
+							request: { caption: '' }
+						};
+						const suffix = [synthJob.variant, t.task].filter((s) => s).join(' ');
+						const song: Song = {
+							name: suffix ? synthJob.name + ' (' + suffix + ')' : synthJob.name,
+							format: synthJob.format,
+							created: now + i,
+							caption: t.caption,
+							seed: t.seed,
+							duration: t.duration,
+							request: t.request,
+							audio: blobs[i]
+						};
+						await putSong(song);
+					}
+					app.songs = (await getAllSongs()).reverse();
+				})
+				.catch(() => {
+					clearJob('synth');
+				})
+				.finally(() => {
+					busySynth = false;
+				});
+		}
+	});
+
 	function reset() {
 		app.name = '';
 		setRequest({ caption: '' });
@@ -119,7 +242,7 @@
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		const safe = app.name.replace(/[^a-zA-Z0-9 _-]/g, '') || 'request';
+		const safe = app.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '') || 'request';
 		a.download = `${safe}.json`;
 		a.click();
 		URL.revokeObjectURL(url);
@@ -133,12 +256,10 @@
 		const input = e.target as HTMLInputElement;
 		const file = input.files?.[0];
 		if (!file) return;
-		// reset so the same file can be re-opened
 		input.value = '';
 
 		const ext = file.name.split('.').pop()?.toLowerCase() || '';
 
-		// JSON: load request into form (existing behavior)
 		if (ext === 'json') {
 			file
 				.text()
@@ -154,117 +275,40 @@
 			return;
 		}
 
-		// MP3 or WAV: send to /understand, populate form + create song card
+		// MP3 or WAV: create song card (audio only, use Scan on the card for metadata)
 		if (ext === 'mp3' || ext === 'wav') {
-			importAudio(file, ext);
+			openAudio(file, ext);
 			return;
 		}
 
 		toast('Unsupported file type: ' + ext);
 	}
 
-	// import audio file via /understand endpoint.
-	// creates a song card with the original audio and fills the form
-	// with the returned metadata so it matches existing generated songs.
-	async function importAudio(file: File, ext: string) {
-		busy = true;
-		try {
-			toast('Understanding audio...', 4000, true);
-			const blob = new Blob([await file.arrayBuffer()], {
-				type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
-			});
-			const result = await understandAudio(
-				blob,
-				app.request.lm_model as string,
-				app.request.synth_model as string
-			);
-
-			setRequest(result);
-			app.pendingRequests = [];
-			app.pendingIndex = 0;
-
-			// derive a clean name from the filename (strip extension)
-			const name = file.name.replace(/\.(mp3|wav)$/i, '') || 'Imported';
-			app.name = name;
-
-			// create a song card so the audio is playable immediately
-			const song: Song = {
-				name: name,
-				format: ext,
-				created: Date.now(),
-				caption: result.caption || '',
-				seed: Number(result.seed) || 0,
-				duration: Number(result.duration) || 0,
-				request: { ...result },
-				audio: blob
-			};
-			song.id = await putSong(song);
-			app.songs.unshift(song);
-
-			toast('Imported: ' + name, 4000, true);
-		} catch (e: unknown) {
-			toast(e instanceof Error ? e.message : String(e));
-		} finally {
-			busy = false;
-		}
+	async function openAudio(file: File, ext: string) {
+		const blob = new Blob([await file.arrayBuffer()], {
+			type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
+		});
+		const name = file.name.replace(/\.(mp3|wav)$/i, '') || 'Imported';
+		const song: Song = {
+			name,
+			format: ext,
+			created: Date.now(),
+			caption: '',
+			seed: 0,
+			duration: 0,
+			request: { caption: '' },
+			audio: blob
+		};
+		song.id = await putSong(song);
+		app.songs.unshift(song);
+		app.name = name;
+		toast('Opened: ' + name, 4000, true);
 	}
 
-	// convert string or number to number, return undefined if empty/NaN
-	function num(v: unknown): number | undefined {
-		if (v == null || v === '') return undefined;
-		const n = Number(v);
-		return isNaN(n) ? undefined : n;
-	}
-
-	// snapshot app.request into a clean AceRequest with proper types.
-	// bind:value guarantees app.request always matches the DOM.
+	// snapshot app.request into a clean AceRequest; drop stale adapter
 	function buildRequest(): AceRequest {
-		const r = app.request;
-		const out: AceRequest = { caption: String(r.caption || '') };
-		if (r.lyrics) out.lyrics = String(r.lyrics);
-		if (r.audio_codes) out.audio_codes = String(r.audio_codes);
-		if (r.vocal_language) out.vocal_language = String(r.vocal_language);
-		if (r.keyscale) out.keyscale = String(r.keyscale);
-		if (r.timesignature) out.timesignature = String(r.timesignature);
-		const bpm = num(r.bpm);
-		if (bpm != null) out.bpm = bpm;
-		const duration = num(r.duration);
-		if (duration != null) out.duration = duration;
-		const seed = num(r.seed);
-		if (seed != null) out.seed = seed;
-		const lm_temperature = num(r.lm_temperature);
-		if (lm_temperature != null) out.lm_temperature = lm_temperature;
-		const lm_cfg_scale = num(r.lm_cfg_scale);
-		if (lm_cfg_scale != null) out.lm_cfg_scale = lm_cfg_scale;
-		const lm_top_p = num(r.lm_top_p);
-		if (lm_top_p != null) out.lm_top_p = lm_top_p;
-		const lm_top_k = num(r.lm_top_k);
-		if (lm_top_k != null) out.lm_top_k = lm_top_k;
-		if (r.lm_negative_prompt) out.lm_negative_prompt = String(r.lm_negative_prompt);
-		const inference_steps = num(r.inference_steps);
-		if (inference_steps != null) out.inference_steps = inference_steps;
-		const guidance_scale = num(r.guidance_scale);
-		if (guidance_scale != null) out.guidance_scale = guidance_scale;
-		const shift = num(r.shift);
-		if (shift != null) out.shift = shift;
-		const audio_cover_strength = num(r.audio_cover_strength);
-		if (audio_cover_strength != null) out.audio_cover_strength = audio_cover_strength;
-		const cover_noise_strength = num(r.cover_noise_strength);
-		if (cover_noise_strength != null) out.cover_noise_strength = cover_noise_strength;
-		const lm_batch_size = num(r.lm_batch_size);
-		if (lm_batch_size != null && lm_batch_size >= 1) out.lm_batch_size = lm_batch_size;
-		const synth_batch_size = num(r.synth_batch_size);
-		if (synth_batch_size != null && synth_batch_size >= 1) out.synth_batch_size = synth_batch_size;
-		if (r.task_type) out.task_type = String(r.task_type);
-		if (r.track) out.track = String(r.track);
-		if (r.infer_method) out.infer_method = String(r.infer_method);
-		if (r.synth_model) out.synth_model = String(r.synth_model);
-		if (r.lm_model) out.lm_model = String(r.lm_model);
-		if (r.lora && loraList.includes(String(r.lora))) out.lora = String(r.lora);
-		const lora_scale = num(r.lora_scale);
-		if (lora_scale != null) out.lora_scale = lora_scale;
-		const peak_clip = num(r.peak_clip);
-		if (peak_clip != null) out.peak_clip = peak_clip;
+		const out = buildSparse(app.request);
+		if (out.adapter && !adapterList.includes(String(out.adapter))) delete out.adapter;
 		return out;
 	}
 
@@ -275,24 +319,14 @@
 		}
 	}
 
-	// load pendingRequests[index] into the form.
-	// synth params are form-global, not per-pending: preserve them across switches.
+	// load pendingRequests[index] into the form, preserving user settings
 	function loadPending(index: number) {
 		const r = app.pendingRequests[index];
-		setRequest({
-			...r,
-			inference_steps: app.request.inference_steps,
-			guidance_scale: app.request.guidance_scale,
-			shift: app.request.shift,
-			seed: app.request.seed,
-			audio_cover_strength: app.request.audio_cover_strength,
-			cover_noise_strength: app.request.cover_noise_strength,
-			synth_batch_size: app.request.synth_batch_size
-		});
+		setRequest(withCurrentSettings(r, app.request));
 		app.pendingIndex = index;
 	}
 
-	// switch to a different pending composition (saves current edits first)
+	// switch pending composition (saves current edits first)
 	function switchPending(delta: number) {
 		const next = app.pendingIndex + delta;
 		if (next < 0 || next >= app.pendingRequests.length) return;
@@ -300,121 +334,65 @@
 		loadPending(next);
 	}
 
-	// shared: call an LM endpoint and load results into the form.
-	// LM enriches: caption, lyrics, bpm, duration, keyscale, timesignature, vocal_language, audio_codes.
-	// Everything else is preserved from the current UI state.
-	async function lmCall(fn: (req: AceRequest) => Promise<AceRequest[]>) {
-		busy = true;
+	// shared: submit an LM job, poll, and load results into the form
+	async function lmCall(fn: (req: AceRequest) => Promise<string>) {
+		busyLm = true;
 		try {
 			const req = buildRequest();
 			req.audio_codes = '';
-			const results = await fn(req);
+			const jobId = await fn(req);
+			saveJob('lm', jobId);
+			await pollJob(jobId);
+			const results = await jobResultJson(jobId);
+			clearJob('lm');
 			if (results.length > 0) {
 				app.pendingRequests = results;
 				app.pendingIndex = 0;
-				setRequest({
-					...results[0],
-					inference_steps: app.request.inference_steps,
-					guidance_scale: app.request.guidance_scale,
-					shift: app.request.shift,
-					seed: app.request.seed,
-					audio_cover_strength: app.request.audio_cover_strength,
-					cover_noise_strength: app.request.cover_noise_strength,
-					repaint_strength: app.request.repaint_strength,
-					synth_batch_size: app.request.synth_batch_size,
-					lm_batch_size: app.request.lm_batch_size,
-					lm_temperature: app.request.lm_temperature,
-					lm_cfg_scale: app.request.lm_cfg_scale,
-					lm_top_p: app.request.lm_top_p,
-					lm_top_k: app.request.lm_top_k,
-					lm_negative_prompt: app.request.lm_negative_prompt
-				});
+				setRequest(withCurrentSettings(results[0], app.request));
 			}
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
 		} finally {
-			busy = false;
+			busyLm = false;
 		}
 	}
 
-	// Dice: pick a random example prompt and fill the caption
 	function dice() {
 		setRequest(rollDice());
 	}
 
-	// Inspire: short caption -> fresh metadata + lyrics (no audio codes)
 	async function inspire() {
-		await lmCall(lmInspire);
+		await lmCall(lmSubmitInspire);
 	}
 
-	// Format: caption + lyrics -> metadata + lyrics (no audio codes)
 	async function format() {
-		await lmCall(lmFormat);
+		await lmCall(lmSubmitFormat);
 	}
 
-	// Compose: send form to LM, store all enriched results for batch synth.
-	// The LM preserves user-provided fields and fills the rest independently
-	// per batch item. Each result is a complete standalone request.
 	async function compose() {
-		await lmCall(lmGenerate);
+		await lmCall(lmSubmit);
 	}
 
 	// POST /synth: send pending requests (or current form) to the server.
-	// synth params (batch, seed, steps, CFG, shift) come from the form, not from pending.
-	// server groups by request and expands synth_batch_size for GPU batching.
-	// webui resolves seeds and predicts the expanded list for SongCard mapping.
+	// synth params come from the form (global), not per-pending.
+	// server expands synth_batch_size internally; we predict the same expansion for SongCards.
 	async function synthesize() {
-		busy = true;
+		busySynth = true;
 		try {
 			savePending();
 			const reqs: AceRequest[] =
 				app.pendingRequests.length > 0 ? $state.snapshot(app.pendingRequests) : [buildRequest()];
 
-			// read synth params from the form (global, not per-pending).
 			const synthBatch = Math.max(1, Number(app.request.synth_batch_size) || 1);
 			const userSeed = num(app.request.seed);
 			const hasSeed = userSeed != null && userSeed >= 0;
-			const synthParams: Partial<AceRequest> = {};
-			const steps = num(app.request.inference_steps);
-			if (steps != null) synthParams.inference_steps = steps;
-			const cfg = num(app.request.guidance_scale);
-			if (cfg != null) synthParams.guidance_scale = cfg;
-			const sh = num(app.request.shift);
-			if (sh != null) synthParams.shift = sh;
-			const acs = num(app.request.audio_cover_strength);
-			if (acs != null) synthParams.audio_cover_strength = acs;
-			const cns = num(app.request.cover_noise_strength);
-			if (cns != null) synthParams.cover_noise_strength = cns;
-			const rps = num(app.request.repaint_strength);
-			if (rps != null) synthParams.repaint_strength = rps;
-			// task_type and track from form
-			const t = app.request.task_type || '';
-			if (t) synthParams.task_type = t;
-			if (app.request.track) synthParams.track = app.request.track;
-			// infer_method from form
-			const im = app.request.infer_method || '';
-			if (im) synthParams.infer_method = im;
-			const b = num(app.request.peak_clip);
-			if (b != null) synthParams.peak_clip = b;
-			// model routing from form
-			if (app.request.synth_model) synthParams.synth_model = app.request.synth_model;
-			if (app.request.lora && loraList.includes(String(app.request.lora)))
-				synthParams.lora = app.request.lora;
-			const loraScale = num(app.request.lora_scale);
-			if (loraScale != null) synthParams.lora_scale = loraScale;
-			// repaint/lego: inject range from source audio selection (optional for lego)
-			if (
-				(t === TASK_REPAINT || t === TASK_LEGO) &&
-				app.srcRangeStart >= 0 &&
-				app.srcRangeEnd > app.srcRangeStart
-			) {
-				synthParams.repainting_start = app.srcRangeStart;
-				synthParams.repainting_end = app.srcRangeEnd;
-			}
 
-			// resolve seeds, build server payload and local expanded list for SongCard mapping.
-			// server receives synth_batch_size and expands internally (groups by T for GPU batch).
-			// webui predicts the same expansion: seed, seed+1, ..., seed+N-1.
+			const synthParams = pickSections(app.request, ['flow', 'toolbar', 'routing']);
+			delete synthParams.seed;
+			delete synthParams.synth_batch_size;
+			if (synthParams.adapter && !adapterList.includes(String(synthParams.adapter)))
+				delete synthParams.adapter;
+
 			const toSend: AceRequest[] = [];
 			const expanded: AceRequest[] = [];
 			for (const r of reqs) {
@@ -425,28 +403,42 @@
 				}
 			}
 
-			// find source audio (cover/lego/repaint) and reference audio (timbre)
 			const srcSong = app.srcSongId != null ? app.songs.find((s) => s.id === app.srcSongId) : null;
 			const refSong = app.refSongId != null ? app.songs.find((s) => s.id === app.refSongId) : null;
 
-			const blobs =
+			// extract DiT variant from model filename ("acestep-v15-xl-turbo-Q8_0.gguf" -> "xl-turbo")
+			const model = String(app.request.synth_model || '');
+			const vm = model.match(/^acestep-v15-(.+?)-(Q\d.*|BF16)\.gguf$/);
+			const variant = vm ? vm[1] : '';
+			const baseName = app.name || 'Untitled';
+
+			const jobId =
 				srcSong || refSong
-					? await synthGenerateWithAudio(
+					? await synthSubmitWithAudio(
 							toSend,
 							srcSong?.audio ?? null,
 							refSong?.audio ?? null,
 							app.format
 						)
-					: await synthGenerate(toSend, app.format);
+					: await synthSubmit(toSend, app.format);
+			saveJob('synth', {
+				id: jobId,
+				name: baseName,
+				format: app.format,
+				variant,
+				tracks: expanded.map((r) => ({
+					caption: r.caption || '',
+					seed: r.seed || 0,
+					duration: r.duration || 0,
+					task: r.task_type || 'text2music',
+					request: r
+				}))
+			});
+			await pollJob(jobId);
+			const blobs = await jobResultBlobs(jobId);
+			clearJob('synth');
+
 			const now = Date.now();
-			const baseName = app.name || 'Untitled';
-
-			// extract DiT variant from model filename
-			// "acestep-v15-xl-turbo-Q8_0.gguf" -> "xl-turbo"
-			const model = String(app.request.synth_model || '');
-			const vm = model.match(/^acestep-v15-(.+?)-(Q\d.*|BF16)\.gguf$/);
-			const variant = vm ? vm[1] : '';
-
 			for (let i = blobs.length - 1; i >= 0; i--) {
 				const r = expanded[i];
 				const task = r.task_type || 'text2music';
@@ -469,8 +461,18 @@
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
 		} finally {
-			busy = false;
+			busySynth = false;
 		}
+	}
+
+	function clearMetadata() {
+		clearSection(app.request, 'metadata');
+	}
+
+	function clearFlowMatching() {
+		clearSection(app.request, 'flow');
+		app.srcRangeStart = null;
+		app.srcRangeEnd = null;
 	}
 
 	let panelModels = $state(true);
@@ -482,24 +484,49 @@
 
 	let lmModelOptions = $derived(lmModels.map((n: string) => ({ text: n, value: n })));
 	let ditModelOptions = $derived(ditModels.map((n: string) => ({ text: n, value: n })));
-	let loraOptions = $derived([
+	let adapterOptions = $derived([
 		{ text: 'Disabled', value: '' },
-		...(loraStale ? [{ text: String(app.request.lora), value: String(app.request.lora), disabled: true }] : []),
-		...loraList.map((n: string) => ({ text: n, value: n }))
+		...(adapterStale
+			? [{ text: String(app.request.adapter), value: String(app.request.adapter), disabled: true }]
+			: []),
+		...adapterList.map((n: string) => ({ text: n, value: n }))
 	]);
 	let taskOptions = [
-		{ text: 'text2music', value: '' },
-		{ text: 'cover', value: TASK_COVER },
-		{ text: 'cover-nofsq', value: TASK_COVER_NOFSQ },
-		{ text: 'repaint', value: TASK_REPAINT },
-		{ text: 'lego', value: TASK_LEGO },
-		{ text: 'extract', value: TASK_EXTRACT },
-		{ text: 'complete', value: TASK_COMPLETE }
+		{ text: 'Text2Music: from prompt and LM codes', value: TASK_TEXT2MUSIC },
+		{ text: 'Cover: reinterpret in a new style', value: TASK_COVER },
+		{ text: 'Cover (no FSQ): closer to the original', value: TASK_COVER_NOFSQ },
+		{ text: 'Repaint: regenerate a region', value: TASK_REPAINT },
+		{ text: 'Lego: add a stem over backing audio', value: TASK_LEGO },
+		{ text: 'Extract: isolate one stem from a mix', value: TASK_EXTRACT },
+		{ text: 'Complete: auto-arrange around a partial track', value: TASK_COMPLETE }
 	];
 	let methodOptions = [
-		{ text: 'ODE Euler', value: '' },
-		{ text: 'SDE Stochastic', value: 'sde' }
+		{ text: 'ODE Euler', value: INFER_ODE },
+		{ text: 'SDE Stochastic', value: INFER_SDE }
 	];
+	let dcwOptions = [
+		{ text: 'Low', value: DCW_MODE_LOW },
+		{ text: 'High', value: DCW_MODE_HIGH },
+		{ text: 'Double', value: DCW_MODE_DOUBLE },
+		{ text: 'Pix', value: DCW_MODE_PIX }
+	];
+
+	// Repaint start/end are bound to srcRange* (which syncs to request.repainting_*).
+	// Presented as a plain number input so the user can type a value directly.
+	let repaintStartText = $derived(
+		app.srcRangeStart != null ? String(Math.round(app.srcRangeStart * 100) / 100) : ''
+	);
+	let repaintEndText = $derived(
+		app.srcRangeEnd != null ? String(Math.round(app.srcRangeEnd * 100) / 100) : ''
+	);
+	function onRepaintStart(e: Event) {
+		const s = (e.target as HTMLInputElement).value.trim();
+		app.srcRangeStart = s === '' ? null : isNaN(Number(s)) ? app.srcRangeStart : Number(s);
+	}
+	function onRepaintEnd(e: Event) {
+		const s = (e.target as HTMLInputElement).value.trim();
+		app.srcRangeEnd = s === '' ? null : isNaN(Number(s)) ? app.srcRangeEnd : Number(s);
+	}
 </script>
 
 <form class="form ace-neutral-fields" onsubmit={(e) => e.preventDefault()}>
@@ -532,27 +559,33 @@
 			<div class="panel-body" transition:slideM3>
 				<SelectOutlined
 					label="LM model"
-					options={lmModelOptions.length > 0 ? lmModelOptions : [{text: 'Loading...', value: ''}]}
+					options={lmModelOptions.length > 0 ? lmModelOptions : [{ text: 'Loading...', value: '' }]}
 					value={app.request.lm_model || ''}
-					onchange={(e) => { app.request.lm_model = (e.target as HTMLSelectElement).value; }}
+					onchange={(e) => {
+						app.request.lm_model = (e.target as HTMLSelectElement).value;
+					}}
 				/>
 				<SelectOutlined
 					label="DiT model"
-					options={ditModelOptions.length > 0 ? ditModelOptions : [{text: 'Loading...', value: ''}]}
+					options={ditModelOptions.length > 0 ? ditModelOptions : [{ text: 'Loading...', value: '' }]}
 					value={app.request.synth_model || ''}
-					onchange={(e) => { app.request.synth_model = (e.target as HTMLSelectElement).value; }}
+					onchange={(e) => {
+						app.request.synth_model = (e.target as HTMLSelectElement).value;
+					}}
 				/>
-				<div class="lora-row">
-					<div class="lora-select">
+				<div class="adapter-row">
+					<div class="adapter-select">
 						<SelectOutlined
 							label="LoRA"
-							options={loraOptions}
-							value={app.request.lora || ''}
-							onchange={(e) => { app.request.lora = (e.target as HTMLSelectElement).value; }}
+							options={adapterOptions}
+							value={app.request.adapter || ''}
+							onchange={(e) => {
+								app.request.adapter = (e.target as HTMLSelectElement).value;
+							}}
 						/>
 					</div>
-					<div class="lora-scale">
-						<NumericTextFieldOutlined label="Scale" bind:value={app.request.lora_scale} />
+					<div class="adapter-scale">
+						<NumericTextFieldOutlined label="Scale" bind:value={app.request.adapter_scale} />
 					</div>
 				</div>
 			</div>
@@ -561,8 +594,20 @@
 
 	<TextFieldOutlined label="Name" bind:value={app.name} />
 	<AceTextFieldOutlinedMultiline label="Caption" bind:value={app.request.caption} />
-	<AceTextFieldOutlinedMultiline label="Lyrics" bind:value={app.request.lyrics} />
 
+	<div class="lyrics-block">
+		<AceTextFieldOutlinedMultiline label="Lyrics" bind:value={app.request.lyrics} />
+		<div class="lyrics-toggle">
+			<Chip variant="input" selected={instrumental} onclick={toggleInstrumental}>Instrumental</Chip>
+		</div>
+	</div>
+
+	<div class="section-with-clear">
+		<span class="section-title">Metadata</span>
+		<Button variant="text" iconType="full" onclick={clearMetadata}>
+			<Icon icon={iconClose} />
+		</Button>
+	</div>
 	<div class="grid-2col">
 		<TextFieldOutlined label="Language" bind:value={app.request.vocal_language} />
 		<NumericTextFieldOutlined label="BPM" bind:value={app.request.bpm} />
@@ -596,14 +641,19 @@
 					<NumericTextFieldOutlined label="Top P" bind:value={app.request.lm_top_p} />
 					<NumericTextFieldOutlined label="Top K" bind:value={app.request.lm_top_k} />
 				</div>
-				<TextFieldOutlinedMultiline label="Negative prompt" bind:value={app.request.lm_negative_prompt} />
+				<TextFieldOutlinedMultiline
+					label="Negative prompt"
+					bind:value={app.request.lm_negative_prompt}
+				/>
 				<TextFieldOutlinedMultiline label="Audio codes" bind:value={app.request.audio_codes} />
 			</div>
 		{/if}
 	</div>
 
 	<div class="inline-row">
-		<div class="batch-field"><NumericTextFieldOutlined label="Batch" bind:value={app.request.lm_batch_size} /></div>
+		<div class="batch-field">
+			<NumericTextFieldOutlined label="Batch" bind:value={app.request.lm_batch_size} />
+		</div>
 		<div class="spacer"></div>
 		<span class="inline-label">Pending</span>
 		<div class="pending-nav">
@@ -619,8 +669,11 @@
 		</div>
 	</div>
 
-	<div class="ace-primary-strip fill-width">
+	<div class="ace-primary-strip action-row">
 		<Button variant="filled" disabled={busy} onclick={compose}>Compose</Button>
+		<Button variant="outlined" disabled={!busyLm} onclick={cancelPipeline}>
+			<Icon icon={iconStop} /> Cancel
+		</Button>
 	</div>
 
 	<div class="ace-panel">
@@ -634,7 +687,9 @@
 					label="Type"
 					options={taskOptions}
 					value={taskType}
-					onchange={(e) => { app.request.task_type = (e.target as HTMLSelectElement).value; }}
+					onchange={(e) => {
+						app.request.task_type = (e.target as HTMLSelectElement).value;
+					}}
 				/>
 				<div class="chip-row">
 					<span class="inline-label">Track</span>
@@ -657,17 +712,50 @@
 	</div>
 
 	<div class="ace-panel">
-		<button class="panel-header" type="button" onclick={() => (panelFlow = !panelFlow)}>
-			<span class="chevron" class:open={panelFlow}><Icon icon={iconExpandMore} size={18} /></span>
-			Flow matching
-		</button>
+		<div class="panel-header-row">
+			<button class="panel-header" type="button" onclick={() => (panelFlow = !panelFlow)}>
+				<span class="chevron" class:open={panelFlow}
+					><Icon icon={iconExpandMore} size={18} /></span
+				>
+				Flow matching
+			</button>
+			<div class="panel-clear">
+				<Button variant="text" iconType="full" onclick={clearFlowMatching}>
+					<Icon icon={iconClose} />
+				</Button>
+			</div>
+		</div>
 		{#if panelFlow}
 			<div class="panel-body" transition:slideM3>
 				<div class="grid-2col">
 					<NumericTextFieldOutlined label="Steps" bind:value={app.request.inference_steps} />
-					<NumericTextFieldOutlined label="Cover str." bind:value={app.request.audio_cover_strength} />
-					<NumericTextFieldOutlined label="Cover noise" bind:value={app.request.cover_noise_strength} />
-					<NumericTextFieldOutlined label="Repaint str." bind:value={app.request.repaint_strength} />
+					<NumericTextFieldOutlined
+						label="Cover str."
+						bind:value={app.request.audio_cover_strength}
+					/>
+					<NumericTextFieldOutlined
+						label="Cover noise"
+						bind:value={app.request.cover_noise_strength}
+					/>
+					<SelectOutlined
+						label="DCW mode"
+						options={dcwOptions}
+						value={app.request.dcw_mode || ''}
+						onchange={(e) => {
+							app.request.dcw_mode = (e.target as HTMLSelectElement).value;
+						}}
+					/>
+					<NumericTextFieldOutlined label="DCW scaler" bind:value={app.request.dcw_scaler} />
+					<NumericTextFieldOutlined
+						label="DCW high scaler"
+						bind:value={app.request.dcw_high_scaler}
+					/>
+					<TextFieldOutlined
+						label="Repaint start"
+						value={repaintStartText}
+						oninput={onRepaintStart}
+					/>
+					<TextFieldOutlined label="Repaint end" value={repaintEndText} oninput={onRepaintEnd} />
 					<NumericTextFieldOutlined label="CFG scale" bind:value={app.request.guidance_scale} />
 					<NumericTextFieldOutlined label="Shift" bind:value={app.request.shift} />
 					<NumericTextFieldOutlined label="Seed" bind:value={app.request.seed} />
@@ -676,19 +764,35 @@
 					label="Method"
 					options={methodOptions}
 					value={app.request.infer_method || ''}
-					onchange={(e) => { app.request.infer_method = (e.target as HTMLSelectElement).value; }}
+					onchange={(e) => {
+						app.request.infer_method = (e.target as HTMLSelectElement).value;
+					}}
 				/>
 			</div>
 		{/if}
 	</div>
 
 	<div class="inline-row">
-		<div class="batch-field"><NumericTextFieldOutlined label="Batch" bind:value={app.request.synth_batch_size} /></div>
-		<div class="batch-field peak-clip-field"><NumericTextFieldOutlined label="Peak clip" bind:value={app.request.peak_clip} /></div>
+		<div class="batch-field">
+			<NumericTextFieldOutlined label="Batch" bind:value={app.request.synth_batch_size} />
+		</div>
+		<div class="batch-field peak-clip-field">
+			<NumericTextFieldOutlined label="Peak clip" bind:value={app.request.peak_clip} />
+		</div>
 		<div class="spacer"></div>
 		<span class="inline-label">Format</span>
-		<Chip variant="input" selected={app.format === 'mp3'} onclick={() => (app.format = 'mp3')}>MP3</Chip>
-		<Chip variant="input" selected={app.format === 'wav'} onclick={() => (app.format = 'wav')}>WAV</Chip>
+		<Chip variant="input" selected={app.format === 'mp3'} onclick={() => (app.format = 'mp3')}
+			>MP3</Chip
+		>
+		<Chip variant="input" selected={app.format === 'wav16'} onclick={() => (app.format = 'wav16')}
+			>WAV16</Chip
+		>
+		<Chip variant="input" selected={app.format === 'wav24'} onclick={() => (app.format = 'wav24')}
+			>WAV24</Chip
+		>
+		<Chip variant="input" selected={app.format === 'wav32'} onclick={() => (app.format = 'wav32')}
+			>WAV32</Chip
+		>
 	</div>
 
 	<div class="chip-row">
@@ -713,9 +817,10 @@
 		</div>
 	</div>
 
-	<div class="ace-primary-strip fill-width">
-		<Button variant="filled" disabled={busy} onclick={synthesize}>
-			Synthesize
+	<div class="ace-primary-strip action-row">
+		<Button variant="filled" disabled={busy} onclick={synthesize}>Synthesize</Button>
+		<Button variant="outlined" disabled={!busySynth} onclick={cancelPipeline}>
+			<Icon icon={iconStop} /> Cancel
 		</Button>
 	</div>
 </form>
@@ -726,25 +831,24 @@
 		flex-direction: column;
 		gap: 1.25rem;
 		padding-top: 0.25rem;
-		/* Outlined field label “chip” matches surface (fixes harsh white cut-out in light mode) */
+		/* Outlined field label "chip" matches surface (fixes harsh white cut-out in light mode) */
 		--m3v-background: var(--m3c-surface);
 	}
 
-	/* Choice chips (Track, Format, …): brand accent */
+	/* Choice chips (Track, Format, Instrumental, ...): brand accent */
 	.form.ace-neutral-fields :global(button.m3-container.input) {
 		--m3c-secondary: var(--ace-brand-secondary);
 		--m3c-secondary-container: var(--ace-brand-secondary-container);
 		--m3c-on-secondary-container: var(--ace-brand-on-secondary-container);
 	}
 
-	/* Outlined text fields only — neutral border + focus (pickers keep theme outline below) */
+	/* Outlined text fields only -- neutral border + focus (pickers keep theme outline below) */
 	.form.ace-neutral-fields :global(.m3-container:has(> input)) {
 		--m3c-primary: var(--m3c-on-surface-variant);
 		--m3c-primary-container: var(--m3c-surface-container-high);
 		--m3c-on-primary-container: var(--m3c-on-surface);
 		--m3c-outline: color-mix(in srgb, var(--m3c-on-surface) 30%, var(--m3c-surface) 70%);
 	}
-	/* :has(textarea) — nested textarea (e.g. AceTextFieldOutlinedMultiline) as well as M3 direct child */
 	.form.ace-neutral-fields :global(.m3-container:has(textarea)) {
 		--m3c-primary: var(--m3c-on-surface-variant);
 		--m3c-primary-container: var(--m3c-surface-container-high);
@@ -787,12 +891,12 @@
 		--m3c-secondary-container: var(--ace-brand-secondary-container);
 		--m3c-on-secondary-container: var(--ace-brand-on-secondary-container);
 	}
-	.form .ace-primary-strip.fill-width {
+	.form .ace-primary-strip.action-row {
 		display: flex;
-		flex-direction: column;
+		gap: 0.5rem;
 	}
-	.form .ace-primary-strip.fill-width > :global(*) {
-		width: 100%;
+	.form .ace-primary-strip.action-row > :global(*:first-child) {
+		flex: 1;
 	}
 
 	/* Toolbar buttons spread evenly */
@@ -804,7 +908,7 @@
 		flex: 1;
 	}
 
-	/* Expansion panels: same ground as app / Name field (outline + radius only; no extra green fill) */
+	/* Expansion panels */
 	.ace-panel {
 		--m3v-background: var(--m3c-surface);
 		border: 1px solid var(--m3c-outline-variant);
@@ -828,6 +932,16 @@
 	.panel-header:hover {
 		background: oklch(from var(--m3c-on-surface) l c h / 0.08);
 	}
+	.panel-header-row {
+		display: flex;
+		align-items: center;
+	}
+	.panel-header-row > .panel-header {
+		flex: 1;
+	}
+	.panel-clear {
+		padding-right: 0.5rem;
+	}
 	.chevron {
 		display: inline-flex;
 		transition: transform 300ms var(--m3-timing-function-emphasized);
@@ -842,18 +956,44 @@
 		padding: 0 1rem 1rem;
 	}
 
-	/* LoRA row: select + scale side by side */
-	.lora-row {
+	/* Adapter (LoRA) row: select + scale side by side */
+	.adapter-row {
 		display: flex;
 		gap: 0.75rem;
 	}
-	.lora-select {
+	.adapter-select {
 		flex: 1;
 		min-width: 0;
 	}
-	.lora-scale {
+	.adapter-scale {
 		width: 5.5rem;
 		flex-shrink: 0;
+	}
+
+	/* Lyrics block: multiline + instrumental chip stacked */
+	.lyrics-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.lyrics-toggle {
+		display: flex;
+		justify-content: flex-end;
+	}
+
+	/* Section title with inline clear button */
+	.section-with-clear {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-bottom: -0.75rem;
+	}
+	.section-with-clear > .section-title {
+		flex: 1;
+	}
+	.section-title {
+		@apply --m3-title-small;
+		color: var(--m3c-on-surface);
 	}
 
 	/* Make text-field / select containers fill their parent, but not chips or buttons */

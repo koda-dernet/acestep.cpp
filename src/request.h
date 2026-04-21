@@ -42,31 +42,55 @@ struct AceRequest {
     float guidance_scale;   // 0 = auto (1.0 for all models)
     float shift;            // 0 = auto (turbo: 3.0, base/sft: 1.0)
 
+    // Differential Correction in Wavelet domain (CVPR 2026, arXiv:2604.16044).
+    // Sampler-side correction for SNR-t bias in flow matching.
+    // dcw_mode = "low"|"high"|"double"|"pix". dcw_scaler applies to the low
+    // band in "low" and "double", to all bands in "high" and "pix". In
+    // "double", dcw_high_scaler is the independent scaler for the high
+    // band. Both scalers are modulated by t_curr. 0.0 disables (bit-perfect
+    // master). Paper-recommended starting value: 0.1.
+    float       dcw_scaler;       // 0.0 (disabled)
+    float       dcw_high_scaler;  // 0.0 (only read in mode "double")
+    std::string dcw_mode;         // "low"
+
     // cover mode (active when source audio is provided)
     float audio_cover_strength;  // 1.0 (0-1, fraction of DiT steps using source context)
     float cover_noise_strength;  // 0.0 (0-1, how close to source: 0=pure noise, 1=source)
 
-    // repaint mode (requires source audio)
-    // Both -1 = no repaint (plain cover). One or both >= 0 activates repaint.
-    // -1 on start means 0s, -1 on end means source duration.
-    float repainting_start;  // -1
+    // repaint region (requires source audio)
+    // start: seconds offset. 0 = source start. Negative = outpaint before source.
+    // end: seconds offset. Negative = source duration (sentinel).
+    //      Values beyond source duration outpaint after source.
+    float repainting_start;  // 0
     float repainting_end;    // -1
 
-    // repaint/lego region quality (Python _resolve_repaint_config).
-    // 0.0 = conservative (max source preservation).
-    // 0.5 = balanced (default).
-    // 1.0 = aggressive (pure diffusion, no injection).
-    float repaint_strength;  // 0.5
-
-    // task type: "" = auto-detect from data, or one of:
-    // text2music, cover, cover-nofsq, repaint, lego, extract, complete
-    std::string task_type;  // ""
+    // task type: one of text2music, cover, cover-nofsq, repaint, lego, extract, complete.
+    // Default: text2music.
+    std::string task_type;  // "text2music"
 
     // track name for lego/extract/complete (e.g. "vocals", "drums", "guitar")
     std::string track;  // ""
 
-    // inference method: "" or "ode" = ODE Euler, "sde" = SDE Stochastic
-    std::string infer_method;  // ""
+    // inference method: "ode" = ODE Euler, "sde" = SDE Stochastic. Default: ode.
+    std::string infer_method;  // "ode"
+
+    // LM mode: "generate" (full: metadata + lyrics + codes),
+    // "inspire" (short query -> metadata + lyrics, no codes),
+    // "format" (caption + lyrics -> metadata + lyrics, no codes). Default: generate.
+    std::string lm_mode;  // "generate"
+
+    // Audio output format: "mp3", "wav16", "wav24", "wav32". Default: mp3.
+    std::string output_format;  // "mp3"
+
+    // model selection. synth_model and lm_model are resolved through the
+    // registry scanned from --models <dir>, by both the HTTP server and the
+    // CLI binaries. An empty value falls to the first matching entry of the
+    // registry. adapter and adapter_scale are read by server and ace-synth
+    // and resolved against --adapters <dir> when set.
+    std::string synth_model;    // ""
+    std::string lm_model;       // ""
+    std::string adapter;        // ""
+    float       adapter_scale;  // 1.0
 
     // audio output: peak clip via percentile normalization.
     // 0 = peak normalization (100.0000th percentile, no clipping).

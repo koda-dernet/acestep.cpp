@@ -5,8 +5,10 @@
 	import iconEdit from '@ktibow/iconset-material-symbols/edit';
 	import iconDownload from '@ktibow/iconset-material-symbols/download';
 	import iconDelete from '@ktibow/iconset-material-symbols/delete';
-	import { app, setRequest } from '../lib/state.svelte.js';
-	import { deleteSong } from '../lib/db.js';
+	import iconHearing from '@ktibow/iconset-material-symbols/hearing';
+	import { app, setRequest, toast } from '../lib/state.svelte.js';
+	import { deleteSong, saveJob, clearJob } from '../lib/db.js';
+	import { understandSubmit, pollJob, jobResultJson } from '../lib/api.js';
 	import type { Song } from '../lib/types.js';
 	import Waveform from './Waveform.svelte';
 
@@ -15,8 +17,8 @@
 	let playing = $state(false);
 	let time = $state(0);
 	let dur = $state(0);
-	let rangeStart = $state(-1);
-	let rangeEnd = $state(-1);
+	let rangeStart = $state(0);
+	let rangeEnd = $state(0);
 
 	let isRef = $derived(app.refSongId === song.id);
 	let isSrc = $derived(app.srcSongId === song.id);
@@ -32,20 +34,35 @@
 	function toggleSrc() {
 		if (isSrc) {
 			app.srcSongId = null;
-			app.srcRangeStart = -1;
-			app.srcRangeEnd = -1;
-			rangeStart = -1;
-			rangeEnd = -1;
+			app.srcRangeStart = null;
+			app.srcRangeEnd = null;
+			rangeStart = 0;
+			rangeEnd = 0;
 		} else {
 			app.srcSongId = song.id ?? null;
 		}
 	}
 
-	// sync local range to global when this song is the src
+	// waveform drag to global state
 	$effect(() => {
-		if (isSrc) {
+		if (isSrc && rangeEnd > rangeStart) {
 			app.srcRangeStart = rangeStart;
 			app.srcRangeEnd = rangeEnd;
+		}
+	});
+
+	// global state to waveform visual (field input)
+	$effect(() => {
+		if (isSrc) {
+			const rs = app.srcRangeStart;
+			const re = app.srcRangeEnd;
+			if (rs != null && re != null && re > rs) {
+				rangeStart = rs;
+				rangeEnd = re;
+			} else {
+				rangeStart = 0;
+				rangeEnd = 0;
+			}
 		}
 	});
 
@@ -60,12 +77,41 @@
 		app.pendingIndex = 0;
 	}
 
+	let scanning = $state(false);
+
+	// analyze audio: send to /understand, fill form with detected metadata.
+	// persists the job under 'lm' key so page reload resumes polling.
+	async function scan() {
+		scanning = true;
+		try {
+			const jobId = await understandSubmit(
+				song.audio,
+				app.request.lm_model as string,
+				app.request.synth_model as string
+			);
+			saveJob('lm', jobId);
+			await pollJob(jobId);
+			const results = await jobResultJson(jobId);
+			clearJob('lm');
+			app.name = song.name;
+			if (results.length > 0) {
+				setRequest(results[0]);
+			}
+			app.pendingRequests = results;
+			app.pendingIndex = 0;
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : String(e));
+		} finally {
+			scanning = false;
+		}
+	}
+
 	function downloadAudio() {
 		const url = URL.createObjectURL(song.audio);
 		const a = document.createElement('a');
 		a.href = url;
-		const safe = song.name.replace(/[^a-zA-Z0-9 _-]/g, '') || 'song';
-		const ext = song.format === 'wav' ? '.wav' : '.mp3';
+		const safe = song.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '') || 'song';
+		const ext = song.format.startsWith('wav') ? '.wav' : '.mp3';
 		a.download = `${safe}${ext}`;
 		a.click();
 		URL.revokeObjectURL(url);
@@ -103,56 +149,55 @@
 </script>
 
 <div class="song-card-scope">
-<Card variant="outlined">
-	<div class="card-inner">
-		<div class="top-row">
-			<div class="play-btn" class:playing>
-				<Button
-					variant={playing ? 'tonal' : 'text'}
-					iconType="full"
-					onclick={toggle}
-				>
-					<Icon icon={playing ? iconStop : iconPlayArrow} />
-				</Button>
+	<Card variant="outlined">
+		<div class="card-inner">
+			<div class="top-row">
+				<div class="play-btn" class:playing>
+					<Button variant={playing ? 'tonal' : 'text'} iconType="full" onclick={toggle}>
+						<Icon icon={playing ? iconStop : iconPlayArrow} />
+					</Button>
+				</div>
+				<span class="song-name">{song.name}</span>
+				<div class="actions">
+					<Button variant="text" iconType="full" onclick={downloadAudio}>
+						<Icon icon={iconDownload} />
+					</Button>
+					<Button variant="text" iconType="full" onclick={remove}>
+						<Icon icon={iconDelete} />
+					</Button>
+				</div>
 			</div>
-			<span class="song-name">{song.name}</span>
-			<div class="actions">
-				<Button variant="text" iconType="full" onclick={downloadAudio}>
-					<Icon icon={iconDownload} />
-				</Button>
-				<Button variant="text" iconType="full" onclick={remove}>
-					<Icon icon={iconDelete} />
-				</Button>
-			</div>
-		</div>
 
-		<div class="waveform-block">
-			<Waveform
-				audio={song.audio}
-				bind:playing
-				bind:time
-				bind:dur
-				selectable={isSrc}
-				bind:rangeStart
-				bind:rangeEnd
-			/>
-		</div>
+			<div class="waveform-block">
+				<Waveform
+					audio={song.audio}
+					bind:playing
+					bind:time
+					bind:dur
+					selectable={isSrc}
+					bind:rangeStart
+					bind:rangeEnd
+				/>
+			</div>
 
-		<div class="bottom-row">
-			<span class="format-badge">{song.format.toUpperCase()}</span>
-			<span class="time-display">
-				{fmtPos(time)} / {fmtDur(dur)}
-			</span>
-			<div class="bottom-actions">
-				<Button variant="text" iconType="full" onclick={load}>
-					<Icon icon={iconEdit} />
-				</Button>
-				<Chip variant="input" selected={isSrc} onclick={toggleSrc}>Src</Chip>
-				<Chip variant="input" selected={isRef} onclick={toggleRef}>Ref</Chip>
+			<div class="bottom-row">
+				<span class="format-badge">{song.format.toUpperCase()}</span>
+				<span class="time-display">
+					{fmtPos(time)} / {fmtDur(dur)}
+				</span>
+				<div class="bottom-actions">
+					<Button variant="text" iconType="full" onclick={load}>
+						<Icon icon={iconEdit} />
+					</Button>
+					<Button variant="text" iconType="full" disabled={scanning} onclick={scan}>
+						<Icon icon={iconHearing} />
+					</Button>
+					<Chip variant="input" selected={isSrc} onclick={toggleSrc}>Src</Chip>
+					<Chip variant="input" selected={isRef} onclick={toggleRef}>Ref</Chip>
+				</div>
 			</div>
 		</div>
-	</div>
-</Card>
+	</Card>
 </div>
 
 <style>

@@ -27,6 +27,7 @@
 		"vite-plugin-functions-mixins": "^0.4.1"
 	},
 	"dependencies": {
+		"@lucide/svelte": "^0.577.0",
 		"vite-plugin-singlefile": "^2.3.2"
 	}
 }
