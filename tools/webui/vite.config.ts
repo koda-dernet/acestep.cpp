@@ -3,7 +3,7 @@ import { functionsMixins } from 'vite-plugin-functions-mixins';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { gzipSync } from 'zlib';
 import { resolve } from 'path';
 
@@ -29,13 +29,34 @@ function gitVersion(): string {
 // the .gz is committed to git so the C++ build works without npm.
 // gzip timestamp and OS bytes are zeroed for reproducible output.
 function aceGzipPlugin() {
+	let outDirAbs: string | undefined;
 	return {
 		name: 'ace:gzip',
 		apply: 'build' as const,
+		configResolved(config: { root: string; build: { outDir: string } }) {
+			outDirAbs = resolve(config.root, config.build.outDir);
+		},
 		closeBundle() {
-			const indexPath = resolve(__dirname, 'dist', 'index.html');
+			// Vite 7 "environments" can output the client build to e.g. dist/client/,
+			// so we resolve from the actual configured outDir and then try common fallbacks.
+			const configuredOutDir = outDirAbs ?? resolve(__dirname, 'dist');
+			const candidateIndexPaths = [
+				resolve(configuredOutDir, 'index.html'),
+				resolve(configuredOutDir, 'client', 'index.html'),
+				resolve(__dirname, 'dist', 'index.html'),
+				resolve(__dirname, 'dist', 'client', 'index.html')
+			];
+			const indexPath = candidateIndexPaths.find((p) => existsSync(p));
 			const publicDir = resolve(__dirname, '..', 'public');
 			const gzPath = resolve(publicDir, 'index.html.gz');
+
+			if (!indexPath) {
+				console.warn(
+					`[ace:gzip] no built index.html found. Looked in:\n` +
+						candidateIndexPaths.map((p) => `  - ${p}`).join('\n')
+				);
+				return;
+			}
 
 			const html = readFileSync(indexPath, 'utf-8');
 
