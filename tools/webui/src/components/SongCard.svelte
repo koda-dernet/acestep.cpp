@@ -6,10 +6,18 @@
 	import iconDownload from '@ktibow/iconset-material-symbols/download';
 	import iconDelete from '@ktibow/iconset-material-symbols/delete';
 	import iconHearing from '@ktibow/iconset-material-symbols/hearing';
+	import iconMemory from '@ktibow/iconset-material-symbols/memory';
 	import { app, setRequest, toast } from '../lib/state.svelte.js';
-	import { deleteSong, saveJob, clearJob } from '../lib/db.js';
-	import { understandSubmit, pollJob, jobResultJson } from '../lib/api.js';
+	import { deleteSong, saveJob, clearJob, putSong } from '../lib/db.js';
+	import {
+		understandSubmit,
+		vaeEncode,
+		pollJob,
+		jobResultUnderstand,
+		jobResultLatents
+	} from '../lib/api.js';
 	import type { Song } from '../lib/types.js';
+	import { displaySongName } from '../lib/songName.js';
 	import Waveform from './Waveform.svelte';
 
 	let { song }: { song: Song } = $props();
@@ -22,6 +30,7 @@
 
 	let isRef = $derived(app.refSongId === song.id);
 	let isSrc = $derived(app.srcSongId === song.id);
+	let displayName = $derived(displaySongName(song));
 
 	function toggleRef() {
 		if (isRef) {
@@ -85,19 +94,43 @@
 		scanning = true;
 		try {
 			const jobId = await understandSubmit(
-				song.audio,
+				song.latents ? null : song.audio,
+				song.latents ?? null,
 				app.request.lm_model as string,
 				app.request.synth_model as string
 			);
 			saveJob('lm', jobId);
 			await pollJob(jobId);
-			const results = await jobResultJson(jobId);
+			const { requests, latents } = await jobResultUnderstand(jobId);
 			clearJob('lm');
-			app.name = song.name;
-			if (results.length > 0) {
-				setRequest(results[0]);
+			if (song.id != null) {
+				const newLatents = latents ?? song.latents ?? undefined;
+				const newRequest =
+					requests.length > 0 && !song.request.caption ? requests[0] : { ...song.request };
+				const dirty = newLatents !== song.latents || newRequest !== song.request;
+				if (dirty) {
+					const enriched: Song = {
+						id: song.id,
+						name: song.name,
+						format: song.format,
+						created: song.created,
+						caption: newRequest.caption ?? song.caption,
+						seed: newRequest.seed ?? song.seed,
+						duration: newRequest.duration ?? song.duration,
+						request: newRequest,
+						audio: song.audio,
+						...(newLatents ? { latents: newLatents } : {})
+					};
+					await putSong(enriched);
+					if (latents) song.latents = latents;
+					if (newRequest !== song.request) song.request = newRequest;
+				}
 			}
-			app.pendingRequests = results;
+			app.name = song.name;
+			if (requests.length > 0) {
+				setRequest(requests[0]);
+			}
+			app.pendingRequests = requests;
 			app.pendingIndex = 0;
 		} catch (e: unknown) {
 			toast(e instanceof Error ? e.message : String(e));
@@ -110,11 +143,52 @@
 		const url = URL.createObjectURL(song.audio);
 		const a = document.createElement('a');
 		a.href = url;
-		const safe = song.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '') || 'song';
+		const safe = displayName.replace(/[\\/:*?"<>|\x00-\x1f]/g, '') || 'song';
 		const ext = song.format.startsWith('wav') ? '.wav' : '.mp3';
 		a.download = `${safe}${ext}`;
 		a.click();
 		URL.revokeObjectURL(url);
+	}
+
+	function downloadLatents() {
+		if (!song.latents) return;
+		const url = URL.createObjectURL(song.latents);
+		const a = document.createElement('a');
+		a.href = url;
+		const safe = displayName.replace(/[\\/:*?"<>|\x00-\x1f]/g, '') || 'song';
+		a.download = `${safe}.vae`;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
+	async function encodeOnly() {
+		if (song.latents || song.id == null) return;
+		scanning = true;
+		try {
+			const jobId = await vaeEncode(song.audio);
+			saveJob('lm', jobId);
+			await pollJob(jobId);
+			const latents = await jobResultLatents(jobId);
+			clearJob('lm');
+			const enriched: Song = {
+				id: song.id,
+				name: song.name,
+				format: song.format,
+				created: song.created,
+				caption: song.caption,
+				seed: song.seed,
+				duration: song.duration,
+				request: { ...song.request },
+				audio: song.audio,
+				latents
+			};
+			await putSong(enriched);
+			song.latents = latents;
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : String(e));
+		} finally {
+			scanning = false;
+		}
 	}
 
 	async function remove() {
@@ -157,9 +231,20 @@
 						<Icon icon={playing ? iconStop : iconPlayArrow} />
 					</Button>
 				</div>
-				<span class="song-name">{song.name}</span>
+				<span class="song-name">{displayName}</span>
 				<div class="actions">
 					<Button variant="text" iconType="full" onclick={downloadAudio}>
+						<Icon icon={iconDownload} />
+					</Button>
+					<Button
+						variant="text"
+						iconType="full"
+						disabled={scanning || !!song.latents}
+						onclick={encodeOnly}
+					>
+						<Icon icon={iconMemory} />
+					</Button>
+					<Button variant="text" iconType="full" disabled={!song.latents} onclick={downloadLatents}>
 						<Icon icon={iconDownload} />
 					</Button>
 					<Button variant="text" iconType="full" onclick={remove}>
@@ -182,6 +267,9 @@
 
 			<div class="bottom-row">
 				<span class="format-badge">{song.format.toUpperCase()}</span>
+				{#if song.latents}
+					<span class="format-badge">VAE</span>
+				{/if}
 				<span class="time-display">
 					{fmtPos(time)} / {fmtDur(dur)}
 				</span>

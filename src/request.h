@@ -23,7 +23,10 @@ struct AceRequest {
     // generation
     int     lm_batch_size;     // 1 (number of LLM variations)
     int     synth_batch_size;  // 1 (synth batch: number of DiT variations per request)
-    int64_t seed;              // -1 = random (DiT Philox noise)
+    int64_t seed;              // -1 = random. DiT Philox noise consumes the low
+                               // 32 bits. Stored in int64_t to land positive
+                               // after rd(). Range [0, UINT32_MAX], matches the
+                               // Python ACE-Step reference (random.randint(0, 2**32 - 1)).
 
     // LM control
     float       lm_temperature;      // 0.85
@@ -31,6 +34,10 @@ struct AceRequest {
     float       lm_top_p;            // 0.9
     int         lm_top_k;            // 0 = disabled (matches Python None)
     std::string lm_negative_prompt;  // ""
+    int64_t     lm_seed;             // -1 = random. mt19937 consumes the low 32
+                                     // bits. Same int64_t storage trick as seed
+                                     // above: rd() lands positive, no -1
+                                     // collision, no mask needed.
     bool        use_cot_caption;     // true = LLM enriches caption via CoT
 
     // codes (Python-compatible string: "3101,11837,27514,...")
@@ -64,6 +71,18 @@ struct AceRequest {
     float repainting_start;  // 0
     float repainting_end;    // -1
 
+    // Latent post-processing applied after DiT sampling, before VAE decode:
+    //   pred = pred * latent_rescale + latent_shift
+    // Defaults are no-op.
+    float latent_shift;    // 0.0
+    float latent_rescale;  // 1.0
+
+    // Custom flow matching schedule: comma-separated floats,
+    // e.g. "0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0". When non-empty,
+    // overrides inference_steps and shift. The trailing endpoint is the x0
+    // target dropped by the sampler, so a CSV of N values yields N-1 steps.
+    std::string custom_timesteps;  // ""
+
     // task type: one of text2music, cover, cover-nofsq, repaint, lego, extract, complete.
     // Default: text2music.
     std::string task_type;  // "text2music"
@@ -82,21 +101,29 @@ struct AceRequest {
     // Audio output format: "mp3", "wav16", "wav24", "wav32". Default: mp3.
     std::string output_format;  // "mp3"
 
-    // model selection. synth_model and lm_model are resolved through the
-    // registry scanned from --models <dir>, by both the HTTP server and the
-    // CLI binaries. An empty value falls to the first matching entry of the
-    // registry. adapter and adapter_scale are read by server and ace-synth
-    // and resolved against --adapters <dir> when set.
+    // model selection. synth_model, lm_model and vae are resolved through
+    // the registry scanned from --models <dir>, by both the HTTP server and
+    // the CLI binaries. An empty value falls to the first matching entry of
+    // the registry. adapter and adapter scales are read by server and
+    // ace-synth and resolved against --adapters <dir> when set.
     std::string synth_model;    // ""
     std::string lm_model;       // ""
     std::string adapter;        // ""
-    float       adapter_scale;  // 1.0
+    float       adapter_scale;        // 1.0 global multiplier
+    float       adapter_scale_self;   // 1.0 self-attention multiplier
+    float       adapter_scale_cross;  // 1.0 cross-attention multiplier
+    float       adapter_scale_mlp;    // 1.0 MLP multiplier
+    std::string vae;            // ""
 
     // audio output: peak clip via percentile normalization.
     // 0 = peak normalization (100.0000th percentile, no clipping).
     // 10 = default (99.9990th percentile, clips top 0.001%).
     // 999 = max (99.9001th percentile, clips top 0.1%).
     int peak_clip;  // 10
+
+    // audio output: MP3 encoder bitrate in kbps. Applies only when
+    // output_format is "mp3". WAV outputs ignore this field.
+    int mp3_bitrate;  // 128
 };
 
 // Initialize all fields to defaults (matches Python GenerationParams defaults)
@@ -127,3 +154,6 @@ void request_dump(const AceRequest * r, FILE * f);
 
 // Resolve seed: if negative, replace with a hardware random value.
 void request_resolve_seed(AceRequest * r);
+
+// Resolve LM seed: if negative, replace with a hardware random value.
+void request_resolve_lm_seed(AceRequest * r);

@@ -150,10 +150,15 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "[Ace-Understand] FATAL: synth_model '%s' not found in registry\n", req.synth_model.c_str());
         return 1;
     }
+    const ModelEntry * vae_entry = req.vae.empty() ? &registry.vae[0] : registry_find(registry.vae, req.vae.c_str());
+    if (!vae_entry) {
+        fprintf(stderr, "[Ace-Understand] FATAL: vae '%s' not found in registry\n", req.vae.c_str());
+        return 1;
+    }
 
     params.model_path = lm_entry ? lm_entry->path.c_str() : NULL;
     params.dit_path   = dit_entry->path.c_str();
-    params.vae_path   = registry.vae[0].path.c_str();
+    params.vae_path   = vae_entry->path.c_str();
     params.dump_dir   = dump_dir;
 
     // load pipeline
@@ -179,9 +184,13 @@ int main(int argc, char ** argv) {
     free(planar);
     int src_len = T_audio;
 
-    // run understand pipeline
+    // run understand pipeline. CLI feeds raw audio: NULL/0 for latents,
+    // NULL/NULL for capture, NULL/NULL for cancel. The server reuses the
+    // same entry point with the full latent IO surface.
+    request_resolve_lm_seed(&req);
     AceRequest out;
-    int        rc = ace_understand_generate(ctx, src_interleaved, src_len, &req, &out, NULL, NULL);
+    int rc = ace_understand_generate(ctx, src_interleaved, src_len, nullptr, 0, &req, &out, nullptr, nullptr, nullptr,
+                                     nullptr);
     free(src_interleaved);
     ace_understand_free(ctx);
     store_free(store);

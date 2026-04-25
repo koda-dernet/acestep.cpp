@@ -256,7 +256,7 @@ static struct ggml_tensor * dit_load_proj_out_w(WeightCtx *         wctx,
 static bool dit_ggml_load(DiTGGML *    m,
                           const char * gguf_path,
                           const char * adapter_path  = nullptr,
-                          float        adapter_scale = 1.0f) {
+                          AdapterScales adapter_scales = {}) {
     // Backend init. flash_attn_ext accumulates in F16 on CPU, causing audible
     // drift over 24 layers x 8 steps: use F32 manual attention on CPU instead.
     BackendPair bp    = backend_init("DiT");
@@ -420,7 +420,7 @@ static bool dit_ggml_load(DiTGGML *    m,
     // Merge adapter deltas into projection weights (before GPU upload and QKV fusion)
     if (adapter_path) {
         Timer adapter_timer;
-        if (!adapter_merge(&m->wctx, gf, adapter_path, adapter_scale, m->backend)) {
+        if (!adapter_merge(&m->wctx, gf, adapter_path, adapter_scales, m->backend)) {
             fprintf(stderr, "[Adapter] FATAL: no tensors merged (model mismatch)\n");
             gf_close(&gf);
             return false;

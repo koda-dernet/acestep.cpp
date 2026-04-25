@@ -1,142 +1,142 @@
-@import "m3-svelte/etc/styles.css";
-@import "m3-svelte/etc/recommended-styles.css";
-@import "@fontsource/dm-sans/400.css";
-@import "@fontsource/dm-sans/700.css";
-@import "@fontsource/jetbrains-mono/400.css";
-@import "@fontsource/jetbrains-mono/500.css";
+@import 'm3-svelte/etc/styles.css';
+@import 'm3-svelte/etc/recommended-styles.css';
+@import '@fontsource/dm-sans/400.css';
+@import '@fontsource/dm-sans/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
 
 @function --m3-density(--size) {
-  result: var(--size);
+	result: var(--size);
 }
 
 /* M3 theme tokens (seed #2ED573) */
 :root {
-  color-scheme: light dark;
+	color-scheme: light dark;
 }
 @layer tokens {
-  :root {
-    --m3c-surface: light-dark(#dbffe8, #001208);
-    --m3c-surface-dim: light-dark(#98e4bb, #001208);
-    --m3c-surface-bright: light-dark(#dbffe8, #003420);
-    --m3c-surface-container-lowest: light-dark(#fff, #000);
-    --m3c-surface-container-low: light-dark(#c5fedc, #00180c);
-    --m3c-surface-container: light-dark(#b8f6d2, #001f11);
-    --m3c-surface-container-high: light-dark(#aff1cb, #002516);
-    --m3c-surface-container-highest: light-dark(#a5ecc4, #002c1b);
-    --m3c-on-surface: light-dark(#013622, #c9fddd);
-    --m3c-on-surface-variant: light-dark(#36654d, #85b69a);
-    --m3c-outline: light-dark(#518167, #507f66);
-    --m3c-outline-variant: light-dark(#87b89c, #21503a);
-    --m3c-inverse-surface: light-dark(#001208, #e8ffef);
-    --m3c-inverse-on-surface: light-dark(#77a78c, #2f5e47);
-    --m3c-primary: light-dark(#006a33, #43f588);
-    --m3c-primary-dim: light-dark(#005c2c, #2ce67b);
-    --m3c-on-primary: light-dark(#cdffd3, #005729);
-    --m3c-primary-container: light-dark(#43f588, #0eda71);
-    --m3c-on-primary-container: light-dark(#005729, #00451f);
-    --m3c-primary-fixed: #43f588;
-    --m3c-primary-fixed-dim: #2ce67b;
-    --m3c-on-primary-fixed: #00421d;
-    --m3c-on-primary-fixed-variant: #00622f;
-    --m3c-inverse-primary: light-dark(#43f588, #006e35);
-    --m3c-secondary: light-dark(#006945, #74fbbc);
-    --m3c-secondary-dim: light-dark(#005c3c, #65ecae);
-    --m3c-on-secondary: light-dark(#c9ffdf, #005e3e);
-    --m3c-secondary-container: light-dark(#74fbbc, #006c48);
-    --m3c-on-secondary-container: light-dark(#005e3e, #e1ffeb);
-    --m3c-secondary-fixed: #74fbbc;
-    --m3c-secondary-fixed-dim: #65ecae;
-    --m3c-on-secondary-fixed: #00492f;
-    --m3c-on-secondary-fixed-variant: #006945;
-    --m3c-tertiary: light-dark(#006575, #7be6ff);
-    --m3c-tertiary-dim: light-dark(#005866, #00dcfe);
-    --m3c-on-tertiary: light-dark(#ddf7ff, #005360);
-    --m3c-tertiary-container: #00dcfe;
-    --m3c-on-tertiary-container: #004955;
-    --m3c-tertiary-fixed: #00dcfe;
-    --m3c-tertiary-fixed-dim: #00cded;
-    --m3c-on-tertiary-fixed: #00333d;
-    --m3c-on-tertiary-fixed-variant: #005361;
-    --m3c-error: light-dark(#b31b25, #ff716c);
-    --m3c-error-dim: light-dark(#9f0519, #d7383b);
-    --m3c-on-error: light-dark(#ffefee, #490006);
-    --m3c-error-container: light-dark(#fb5151, #9f0519);
-    --m3c-on-error-container: light-dark(#570008, #ffa8a3);
-    --m3c-shadow: #000;
-    --m3c-scrim: #000;
-    --m3c-on-on-primary: light-dark(#006a33, #42f488);
-    --m3c-primary-container-subtle: light-dark(#3ff285, #003416);
-    --m3c-on-primary-container-subtle: light-dark(#005528, #00c565);
-    --m3c-secondary-container-subtle: light-dark(#65ecae, #003420);
-    --m3c-on-secondary-container-subtle: light-dark(#005437, #30c187);
-    --m3c-tertiary-container-subtle: light-dark(#6de4ff, #00313a);
-    --m3c-on-tertiary-container-subtle: light-dark(#00515e, #00bbd8);
-    --m3c-error-container-subtle: light-dark(#ffc7c3, #60000a);
-    --m3c-on-error-container-subtle: light-dark(#970016, #ff8983);
+	:root {
+		--m3c-surface: light-dark(#dbffe8, #001208);
+		--m3c-surface-dim: light-dark(#98e4bb, #001208);
+		--m3c-surface-bright: light-dark(#dbffe8, #003420);
+		--m3c-surface-container-lowest: light-dark(#fff, #000);
+		--m3c-surface-container-low: light-dark(#c5fedc, #00180c);
+		--m3c-surface-container: light-dark(#b8f6d2, #001f11);
+		--m3c-surface-container-high: light-dark(#aff1cb, #002516);
+		--m3c-surface-container-highest: light-dark(#a5ecc4, #002c1b);
+		--m3c-on-surface: light-dark(#013622, #c9fddd);
+		--m3c-on-surface-variant: light-dark(#36654d, #85b69a);
+		--m3c-outline: light-dark(#518167, #507f66);
+		--m3c-outline-variant: light-dark(#87b89c, #21503a);
+		--m3c-inverse-surface: light-dark(#001208, #e8ffef);
+		--m3c-inverse-on-surface: light-dark(#77a78c, #2f5e47);
+		--m3c-primary: light-dark(#006a33, #43f588);
+		--m3c-primary-dim: light-dark(#005c2c, #2ce67b);
+		--m3c-on-primary: light-dark(#cdffd3, #005729);
+		--m3c-primary-container: light-dark(#43f588, #0eda71);
+		--m3c-on-primary-container: light-dark(#005729, #00451f);
+		--m3c-primary-fixed: #43f588;
+		--m3c-primary-fixed-dim: #2ce67b;
+		--m3c-on-primary-fixed: #00421d;
+		--m3c-on-primary-fixed-variant: #00622f;
+		--m3c-inverse-primary: light-dark(#43f588, #006e35);
+		--m3c-secondary: light-dark(#006945, #74fbbc);
+		--m3c-secondary-dim: light-dark(#005c3c, #65ecae);
+		--m3c-on-secondary: light-dark(#c9ffdf, #005e3e);
+		--m3c-secondary-container: light-dark(#74fbbc, #006c48);
+		--m3c-on-secondary-container: light-dark(#005e3e, #e1ffeb);
+		--m3c-secondary-fixed: #74fbbc;
+		--m3c-secondary-fixed-dim: #65ecae;
+		--m3c-on-secondary-fixed: #00492f;
+		--m3c-on-secondary-fixed-variant: #006945;
+		--m3c-tertiary: light-dark(#006575, #7be6ff);
+		--m3c-tertiary-dim: light-dark(#005866, #00dcfe);
+		--m3c-on-tertiary: light-dark(#ddf7ff, #005360);
+		--m3c-tertiary-container: #00dcfe;
+		--m3c-on-tertiary-container: #004955;
+		--m3c-tertiary-fixed: #00dcfe;
+		--m3c-tertiary-fixed-dim: #00cded;
+		--m3c-on-tertiary-fixed: #00333d;
+		--m3c-on-tertiary-fixed-variant: #005361;
+		--m3c-error: light-dark(#b31b25, #ff716c);
+		--m3c-error-dim: light-dark(#9f0519, #d7383b);
+		--m3c-on-error: light-dark(#ffefee, #490006);
+		--m3c-error-container: light-dark(#fb5151, #9f0519);
+		--m3c-on-error-container: light-dark(#570008, #ffa8a3);
+		--m3c-shadow: #000;
+		--m3c-scrim: #000;
+		--m3c-on-on-primary: light-dark(#006a33, #42f488);
+		--m3c-primary-container-subtle: light-dark(#3ff285, #003416);
+		--m3c-on-primary-container-subtle: light-dark(#005528, #00c565);
+		--m3c-secondary-container-subtle: light-dark(#65ecae, #003420);
+		--m3c-on-secondary-container-subtle: light-dark(#005437, #30c187);
+		--m3c-tertiary-container-subtle: light-dark(#6de4ff, #00313a);
+		--m3c-on-tertiary-container-subtle: light-dark(#00515e, #00bbd8);
+		--m3c-error-container-subtle: light-dark(#ffc7c3, #60000a);
+		--m3c-on-error-container-subtle: light-dark(#970016, #ff8983);
 
-    /* Stable brand hues for “primary strip” zones (form overrides --m3c-primary elsewhere) */
-    --ace-brand-primary: light-dark(#006a33, #43f588);
-    --ace-brand-primary-container: light-dark(#43f588, #0eda71);
-    --ace-brand-on-primary-container: light-dark(#005729, #00451f);
-    --ace-brand-secondary: light-dark(#006945, #74fbbc);
-    --ace-brand-secondary-container: light-dark(#74fbbc, #006c48);
-    --ace-brand-on-secondary-container: light-dark(#005e3e, #e1ffeb);
-  }
+		/* Stable brand hues for “primary strip” zones (form overrides --m3c-primary elsewhere) */
+		--ace-brand-primary: light-dark(#006a33, #43f588);
+		--ace-brand-primary-container: light-dark(#43f588, #0eda71);
+		--ace-brand-on-primary-container: light-dark(#005729, #00451f);
+		--ace-brand-secondary: light-dark(#006945, #74fbbc);
+		--ace-brand-secondary-container: light-dark(#74fbbc, #006c48);
+		--ace-brand-on-secondary-container: light-dark(#005e3e, #e1ffeb);
+	}
 }
 
 :root {
-  --m3-font: 'DM Sans', system-ui, -apple-system, sans-serif;
-  @apply --m3-body-large;
-  background-color: var(--m3c-surface);
-  color: var(--m3c-on-surface);
+	--m3-font: 'DM Sans', system-ui, -apple-system, sans-serif;
+	@apply --m3-body-large;
+	background-color: var(--m3c-surface);
+	color: var(--m3c-on-surface);
 }
 
 body {
-  margin: 0;
-  min-height: 100dvh;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+	margin: 0;
+	min-height: 100dvh;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
 }
 
 /* Outlined fields in the left column: M3 labels share the border with the next field — rhythm + notch padding */
 .panel-form {
-  /* Room inside the scroll panel so floated labels aren’t clipped at the top edge */
-  padding-top: 0.625rem;
-  box-sizing: border-box;
+	/* Room inside the scroll panel so floated labels aren’t clipped at the top edge */
+	padding-top: 0.625rem;
+	box-sizing: border-box;
 }
 .panel-form :global(.m3-container:has(> input, > textarea, > select)) {
-  position: relative;
-  z-index: 0;
+	position: relative;
+	z-index: 0;
 }
 .panel-form :global(.m3-container:has(> input, > textarea, > select) > label) {
-  z-index: 2;
-  padding-inline: 0.375rem;
+	z-index: 2;
+	padding-inline: 0.375rem;
 }
 .panel-form :global(.m3-container:has(> input, > textarea, > select) > .layer) {
-  z-index: 0;
+	z-index: 0;
 }
 .panel-form :global(.m3-container:has(> input) > input),
 .panel-form :global(.m3-container:has(> textarea) > textarea),
 .panel-form :global(.m3-container:has(> select) > select) {
-  z-index: 1;
+	z-index: 1;
 }
 /* Floated label sits at top:0 in m3-svelte; glyph ascenders extend above and get clipped by overflow ancestors */
 .panel-form :global(.m3-container:has(> input) > input:focus ~ label),
 .panel-form :global(.m3-container:has(> input) > input:not(:placeholder-shown) ~ label),
 .panel-form :global(.m3-container:has(> textarea) > textarea:focus ~ label),
 .panel-form :global(.m3-container:has(> textarea) > textarea:not(:placeholder-shown) ~ label) {
-  top: 0.3125rem;
+	top: 0.3125rem;
 }
 
 /* Waveform: bars are tinted in Waveform.svelte from app.dark (canvas cannot rely on light-dark() strings) */
 
 @keyframes ace-toast-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, 1rem);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
+	from {
+		opacity: 0;
+		transform: translate(-50%, 1rem);
+	}
+	to {
+		opacity: 1;
+		transform: translate(-50%, 0);
+	}
 }

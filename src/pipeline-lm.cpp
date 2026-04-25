@@ -290,7 +290,7 @@ static std::vector<std::string> run_phase2_batch(Qwen3LM *                      
         }
         prompts[i] = build_lm_prompt_with_cot(bpe, a, cot);
         if (use_cfg) {
-            unconds[i] = build_lm_prompt_uncond_with_cot(bpe, a, negative_prompt);
+            unconds[i] = build_lm_prompt_uncond_with_cot(bpe, negative_prompt);
         }
         int mt = (int) (a.duration * 5) + 100;
         if (mt > max_tokens) {
@@ -567,6 +567,9 @@ AceLm * ace_lm_load(ModelStore * store, const AceLmParams * params) {
     ctx->lm_key.n_kv_sets     = 2 * params->max_batch;
     ctx->lm_key.adapter_path  = "";
     ctx->lm_key.adapter_scale = 1.0f;
+    ctx->lm_key.adapter_scale_self  = 1.0f;
+    ctx->lm_key.adapter_scale_cross = 1.0f;
+    ctx->lm_key.adapter_scale_mlp   = 1.0f;
 
     fprintf(stderr, "[Ace-LM] Ready: path=%s, max_seq=%d, max_batch=%d, fa=%s, fsm=%s\n", params->model_path,
             params->max_seq, params->max_batch, params->use_fa ? "yes" : "no", params->use_fsm ? "yes" : "no");
@@ -648,13 +651,13 @@ int ace_lm_generate(AceLm *            ctx,
 
     Timer t_total;
 
-    // LM RNG seed: always random (mt19937 uses 32 bits)
-    std::random_device rd;
-    uint32_t           seed = rd();
+    // mt19937 consumes the low 32 bits of lm_seed (resolved by caller).
+    uint32_t seed = (uint32_t) req->lm_seed;
 
     // Resolve DiT seed (pass through to output for synth pipeline)
     long long dit_seed = req->seed;
     if (dit_seed < 0) {
+        std::random_device rd;
         dit_seed = (int64_t) rd();
     }
 
@@ -834,6 +837,7 @@ int ace_lm_generate(AceLm *            ctx,
             out[b].audio_codes = batch_codes[b];
         }
         out[b].seed          = dit_seed + b;
+        out[b].lm_seed       = req->lm_seed + b;
         out[b].lm_batch_size = 1;  // each output is a standalone enriched request
     }
 

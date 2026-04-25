@@ -6,11 +6,7 @@
 </script>
 
 {#if app.toast}
-	<div
-		class="toast"
-		class:ok={app.toastOk}
-		class:err={!app.toastOk}
-	>
+	<div class="toast" class:ok={app.toastOk} class:err={!app.toastOk}>
 		<Icon icon={app.toastOk ? iconCheckCircle : iconError} size={18} />
 		<span>{app.toast}</span>
 	</div>

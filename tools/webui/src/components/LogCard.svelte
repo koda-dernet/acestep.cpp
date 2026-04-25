@@ -36,11 +36,7 @@
 </script>
 
 <div class="log-card">
-	<button
-		class="log-header"
-		onclick={() => (app.logsOpen = !app.logsOpen)}
-		type="button"
-	>
+	<button class="log-header" onclick={() => (app.logsOpen = !app.logsOpen)} type="button">
 		<span class="chevron" class:open={app.logsOpen}>
 			<Icon icon={iconExpandMore} size={16} />
 		</span>

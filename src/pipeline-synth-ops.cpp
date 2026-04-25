@@ -12,39 +12,62 @@
 #include "task-types.h"
 #include "vae-enc.h"
 
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <system_error>
 #include <vector>
 
 static const int FRAMES_PER_SECOND = 25;
 
-static std::vector<int> parse_codes_string(const std::string & s) {
-    std::vector<int> codes;
-    if (s.empty()) {
-        return codes;
-    }
-    const char * p = s.c_str();
-    while (*p) {
-        while (*p == ',' || *p == ' ') {
-            p++;
+// CSV list parser tolerant to any whitespace around commas. Locale-immune via
+// std::from_chars (C++17 charconv, overloaded on the numeric type). Used for
+// audio_codes (int) and custom_timesteps (float). Bails on first parse error
+// or overflow, returning the values consumed so far.
+template <typename T> static std::vector<T> parse_csv(const std::string & s) {
+    std::vector<T> out;
+    const char *   first = s.data();
+    const char *   last  = first + s.size();
+    while (first < last) {
+        while (first < last && (*first == ',' || *first == ' ')) {
+            first++;
         }
-        if (!*p) {
+        if (first == last) {
             break;
         }
-        codes.push_back(atoi(p));
-        while (*p && *p != ',') {
-            p++;
+        T    v{};
+        auto r = std::from_chars(first, last, v);
+        if (r.ec != std::errc{}) {
+            break;
         }
+        out.push_back(v);
+        first = r.ptr;
     }
-    return codes;
+    return out;
 }
 
-int ops_encode_src(const AceSynth * ctx, const float * src_audio, int src_len, SynthState & s) {
-    // Cover mode: acquire VAE encoder from the store, encode source audio, release.
+int ops_encode_src(const AceSynth * ctx,
+                   const float *    src_audio,
+                   int              src_len,
+                   const float *    src_latents,
+                   int              src_T_latent,
+                   SynthState &     s) {
+    // Cover mode: ingest source either as pre-encoded latents (zero VAE work)
+    // or by acquiring the VAE encoder and running it on src_audio. When both
+    // are provided latents win: they were either produced by a previous run
+    // or supplied verbatim by the client and need no further processing.
     s.have_cover = false;
     s.T_cover    = 0;
+    if (src_latents && src_T_latent > 0) {
+        s.cover_latents.assign(src_latents, src_latents + (size_t) src_T_latent * 64);
+        s.T_cover    = src_T_latent;
+        s.have_cover = true;
+        fprintf(stderr, "[Encode-Src] Latents in: T_cover=%d (%.2fs), VAE encode skipped\n", s.T_cover,
+                (float) s.T_cover * 1920.0f / 48000.0f);
+        return 0;
+    }
     if (src_audio && src_len > 0) {
         s.timer.reset();
         int T_audio = src_len;
@@ -174,7 +197,7 @@ int ops_resolve_params(const AceSynth * ctx, const AceRequest * reqs, int batch_
     s.max_codes_len = 0;
     s.have_codes    = false;
     for (int b = 0; b < batch_n; b++) {
-        s.per_codes[b] = parse_codes_string(reqs[b].audio_codes);
+        s.per_codes[b] = parse_csv<int>(reqs[b].audio_codes);
         int sz         = (int) s.per_codes[b].size();
         if (sz > s.max_codes_len) {
             s.max_codes_len = sz;
@@ -192,7 +215,21 @@ int ops_resolve_params(const AceSynth * ctx, const AceRequest * reqs, int batch_
 }
 
 void ops_build_schedule(SynthState & s) {
-    // Build s.schedule: t_i = s.shift * t / (1 + (s.shift-1)*t) where t = 1 - i/steps
+    // Custom timesteps override: CSV floats like
+    // "0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0". Last value is the x0
+    // endpoint handled implicitly by the sampler, so we drop it and take
+    // schedule = first N-1 entries, num_steps = N-1.
+    if (!s.rr.custom_timesteps.empty()) {
+        std::vector<float> ts = parse_csv<float>(s.rr.custom_timesteps);
+        if (ts.size() >= 2) {
+            s.num_steps = (int) ts.size() - 1;
+            s.schedule.assign(ts.begin(), ts.end() - 1);
+            fprintf(stderr, "[Build-Schedule] Custom timesteps: %d steps\n", s.num_steps);
+            return;
+        }
+        fprintf(stderr, "[Build-Schedule] WARN: custom_timesteps needs >= 2 values, falling back to shift\n");
+    }
+    // Default: t_i = shift * t / (1 + (shift-1)*t) with t = 1 - i/steps
     s.schedule.resize(s.num_steps);
     for (int i = 0; i < s.num_steps; i++) {
         float t       = 1.0f - (float) i / (float) s.num_steps;
@@ -233,10 +270,24 @@ int ops_resolve_T(const AceSynth * ctx, SynthState & s) {
     return 0;
 }
 
-void ops_encode_timbre(const AceSynth * ctx, const float * ref_audio, int ref_len, SynthState & s) {
-    // Timbre features from ref_audio (independent of src_audio).
-    // VAE-encode ref_audio and pass all frames to the timbre encoder.
-    // NULL ref_audio = single silence frame (no timbre conditioning).
+void ops_encode_timbre(const AceSynth * ctx,
+                       const float *    ref_audio,
+                       int              ref_len,
+                       const float *    ref_latents,
+                       int              ref_T_latent,
+                       SynthState &     s) {
+    // Timbre features from ref_audio or ref_latents (independent of src).
+    // Two paths converge into s.timbre_feats: pre-encoded latents skip the
+    // VAE encoder entirely, raw audio takes the encoder path. Latents win
+    // when both are set. Without either input the timbre falls back to a
+    // single silence frame, disabling timbre conditioning.
+    if (ref_latents && ref_T_latent > 0) {
+        s.S_ref_timbre = ref_T_latent;
+        s.timbre_feats.assign(ref_latents, ref_latents + (size_t) ref_T_latent * 64);
+        fprintf(stderr, "[Encode-Timbre] Latents in: %d frames (%.1fs), VAE encode skipped\n", ref_T_latent,
+                (float) ref_T_latent / 25.0f);
+        return;
+    }
     if (ref_audio && ref_len > 0) {
         s.timer.reset();
         VAEEncoder * ref_vae = store_require_vae_enc(ctx->store, ctx->vae_enc_key);
@@ -249,8 +300,8 @@ void ops_encode_timbre(const AceSynth * ctx, const float * ref_audio, int ref_le
         ModelHandle ref_vae_guard(ctx->store, ref_vae);
 
         int                max_T_ref = (ref_len / 1920) + 64;
-        std::vector<float> ref_latents(max_T_ref * 64);
-        int                T_ref = vae_enc_encode_tiled(ref_vae, ref_audio, ref_len, ref_latents.data(), max_T_ref,
+        std::vector<float> ref_lat_buf(max_T_ref * 64);
+        int                T_ref = vae_enc_encode_tiled(ref_vae, ref_audio, ref_len, ref_lat_buf.data(), max_T_ref,
                                                         ctx->params.vae_chunk, ctx->params.vae_overlap);
         if (T_ref < 0) {
             fprintf(stderr, "[Encode-Timbre] WARNING: ref_audio encode failed, using silence\n");
@@ -258,7 +309,7 @@ void ops_encode_timbre(const AceSynth * ctx, const float * ref_audio, int ref_le
             s.timbre_feats.assign(ctx->meta->silence_full.data(), ctx->meta->silence_full.data() + 64);
         } else {
             s.S_ref_timbre = T_ref;
-            s.timbre_feats.assign(ref_latents.data(), ref_latents.data() + (size_t) T_ref * 64);
+            s.timbre_feats.assign(ref_lat_buf.data(), ref_lat_buf.data() + (size_t) T_ref * 64);
             fprintf(stderr, "[Encode-Timbre] ref_audio: %d frames (%.1fs), %.1f ms\n", T_ref, (float) T_ref / 25.0f,
                     s.timer.ms());
         }
@@ -732,6 +783,17 @@ int ops_dit_generate(const AceSynth * ctx, int batch_n, SynthState & s, bool (*c
         return -1;
     }
     fprintf(stderr, "[DiT-Generate] Total: %.1f ms (%.1f ms/sample)\n", s.timer.ms(), s.timer.ms() / batch_n);
+
+    // Latent post-processing before VAE decode: pred = pred * rescale + shift.
+    // Skipped at defaults (1.0 / 0.0).
+    if (s.rr.latent_rescale != 1.0f || s.rr.latent_shift != 0.0f) {
+        fprintf(stderr, "[DiT-Generate] Latent post: shift=%.3f rescale=%.3f\n", s.rr.latent_shift,
+                s.rr.latent_rescale);
+        const int n = (int) s.output.size();
+        for (int i = 0; i < n; i++) {
+            s.output[i] = s.output[i] * s.rr.latent_rescale + s.rr.latent_shift;
+        }
+    }
 
     debug_dump_2d(&s.dbg, "dit_output", s.output.data(), s.T, s.Oc);
     return 0;

@@ -17,6 +17,7 @@ export interface AceRequest {
 	lm_top_p?: number;
 	lm_top_k?: number;
 	lm_negative_prompt?: string;
+	lm_seed?: number;
 	use_cot_caption?: boolean;
 	inference_steps?: number;
 	guidance_scale?: number;
@@ -28,15 +29,23 @@ export interface AceRequest {
 	cover_noise_strength?: number;
 	repainting_start?: number;
 	repainting_end?: number;
+	latent_shift?: number;
+	latent_rescale?: number;
+	custom_timesteps?: string;
 	task_type?: string;
 	track?: string;
 	infer_method?: string;
 	peak_clip?: number;
+	mp3_bitrate?: number;
 	// server routing (not part of C++ AceRequest, parsed separately)
 	synth_model?: string;
 	lm_model?: string;
 	adapter?: string;
 	adapter_scale?: number;
+	adapter_scale_self?: number;
+	adapter_scale_cross?: number;
+	adapter_scale_mlp?: number;
+	vae?: string;
 }
 
 // GET /props response
@@ -68,4 +77,9 @@ export interface Song {
 	duration: number;
 	request: AceRequest;
 	audio: Blob;
+	// raw f32 [T*64] cover latents captured by the server alongside the audio.
+	// Optional: text2music without source codes does not produce them. When
+	// present, the client uploads them instead of audio on subsequent jobs
+	// that reuse this song as src or ref, skipping a VAE encode each time.
+	latents?: Blob;
 }

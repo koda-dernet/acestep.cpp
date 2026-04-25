@@ -54,6 +54,25 @@
 #include <unordered_map>
 #include <vector>
 
+struct AdapterScales {
+    float global = 1.0f;
+    float self   = 1.0f;
+    float cross  = 1.0f;
+    float mlp    = 1.0f;
+};
+
+static float adapter_effective_scale(const std::string & gguf_name, const AdapterScales & scales) {
+    float module_scale = 1.0f;
+    if (gguf_name.find(".self_attn.") != std::string::npos) {
+        module_scale = scales.self;
+    } else if (gguf_name.find(".cross_attn.") != std::string::npos) {
+        module_scale = scales.cross;
+    } else if (gguf_name.find(".mlp.") != std::string::npos) {
+        module_scale = scales.mlp;
+    }
+    return scales.global * module_scale;
+}
+
 // Convert safetensors tensor data to F32 based on dtype string.
 // Handles "F32", "BF16", "F16". Returns false for unknown dtypes.
 static bool adapter_to_f32(const void * src, float * dst, int64_t n, const std::string & dtype) {
@@ -483,7 +502,7 @@ static bool adapter_merge_lora(WeightCtx *         wctx,
                                const GGUFModel &   gf,
                                const STFile &      st,
                                const std::string & cfg_dir,
-                               float               scale,
+                               const AdapterScales & scales,
                                ggml_backend_t      backend) {
     int alpha_cfg = adapter_read_alpha(cfg_dir.c_str());
 
@@ -584,7 +603,8 @@ static bool adapter_merge_lora(WeightCtx *         wctx,
         } else {
             alpha = (float) rank;
         }
-        float scaling = (alpha / (float) rank) * scale;
+        float effective_scale = adapter_effective_scale(gguf_name, scales);
+        float scaling         = (alpha / (float) rank) * effective_scale;
 
         // load A and B to F32, PEFT rounds them through BF16 before the GEMM
         int64_t            a_nel = rank * in_feat;
@@ -631,7 +651,8 @@ static bool adapter_merge_lora(WeightCtx *         wctx,
         merged++;
     }
 
-    fprintf(stderr, "[Adapter] LoRA merged %d pairs (skipped %d), scale=%.2f\n", merged, skipped, scale);
+    fprintf(stderr, "[Adapter] LoRA merged %d pairs (skipped %d), scale=%.2f self=%.2f cross=%.2f mlp=%.2f\n",
+            merged, skipped, scales.global, scales.self, scales.cross, scales.mlp);
     return merged > 0;
 }
 
@@ -674,7 +695,7 @@ static bool adapter_merge_lora(WeightCtx *         wctx,
 static bool adapter_merge_lokr(WeightCtx *       wctx,
                                const GGUFModel & gf,
                                const STFile &    st,
-                               float             user_scale,
+                               const AdapterScales & scales,
                                ggml_backend_t    backend) {
     // group the per module tensors by LyCORIS prefix. Each module has either
     // w2 alone (monolithic) or w2_a + w2_b (factorized), never both.
@@ -881,7 +902,8 @@ static bool adapter_merge_lokr(WeightCtx *       wctx,
             ds_ptr = ds_f32.data();
         }
 
-        float scaling = alpha / (float) r;
+        float scaling         = alpha / (float) r;
+        float effective_scale = adapter_effective_scale(gguf_name, scales);
 
         auto build = [&](struct ggml_context * ctx) {
             struct ggml_tensor * tw1 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, b, a);
@@ -928,7 +950,7 @@ static bool adapter_merge_lokr(WeightCtx *       wctx,
             return db;
         };
 
-        if (!adapter_merge_on_backend(wctx, pending_idx, base_ptr, ttype, ne0, ne1, ds_ptr, user_scale, backend,
+        if (!adapter_merge_on_backend(wctx, pending_idx, base_ptr, ttype, ne0, ne1, ds_ptr, effective_scale, backend,
                                       gguf_name.c_str(), build)) {
             skipped++;
             continue;
@@ -943,8 +965,10 @@ static bool adapter_merge_lokr(WeightCtx *       wctx,
     }
 
     fprintf(stderr,
-            "[Adapter] LoKr merged %d modules (%d factorized, %d monolithic, %d with DoRA, skipped %d), scale=%.2f\n",
-            merged, merged - mono_count, mono_count, dora_count, skipped, user_scale);
+            "[Adapter] LoKr merged %d modules (%d factorized, %d monolithic, %d with DoRA, skipped %d), scale=%.2f "
+            "self=%.2f cross=%.2f mlp=%.2f\n",
+            merged, merged - mono_count, mono_count, dora_count, skipped, scales.global, scales.self, scales.cross,
+            scales.mlp);
     return merged > 0;
 }
 
@@ -960,7 +984,7 @@ static bool adapter_merge_lokr(WeightCtx *       wctx,
 static bool adapter_merge(WeightCtx *       wctx,
                           const GGUFModel & gf,
                           const char *      adapter_path,
-                          float             scale,
+                          const AdapterScales & scales,
                           ggml_backend_t    backend) {
     std::string sf_path;
     std::string cfg_dir;
@@ -1003,9 +1027,9 @@ static bool adapter_merge(WeightCtx *       wctx,
 
     bool ok;
     if (adapter_detect_lokr(st)) {
-        ok = adapter_merge_lokr(wctx, gf, st, scale, backend);
+        ok = adapter_merge_lokr(wctx, gf, st, scales, backend);
     } else {
-        ok = adapter_merge_lora(wctx, gf, st, cfg_dir, scale, backend);
+        ok = adapter_merge_lora(wctx, gf, st, cfg_dir, scales, backend);
     }
 
     st_close(&st);

@@ -141,8 +141,9 @@ resident module.
 
 The store keys each module by the fields that actually change what gets
 loaded. For an LM that means `(path, max_seq, n_kv_sets)`. For a DiT that
-means `(path, adapter_path, adapter_scale)`. For every other module it is
-just `(path)`. Two requires with the same key return the same pointer, so
+means `(path, adapter_path, adapter_scale, adapter_scale_self,
+adapter_scale_cross, adapter_scale_mlp)`. For every other module it is just
+`(path)`. Two requires with the same key return the same pointer, so
 pipelines that share a module naturally share the resident weights.
 
 CPU-only helpers (BPE merges, FSM decoding template, DiT metadata like
@@ -182,7 +183,7 @@ EOF
     --request /tmp/request0.json
 ```
 
-With an adapter (LoRA today, PEFT directory or ComfyUI single file), set
+With an adapter (LoRA or LoKr, PEFT directory or ComfyUI/LyCORIS single file), set
 `adapter` in the JSON and point `--adapters` at a directory that contains it:
 
 ```bash
@@ -192,6 +193,9 @@ cat > /tmp/request.json << 'EOF'
     "caption": "Upbeat pop rock with driving guitars and catchy hooks",
     "adapter": "best_sft_v2_2338_comfyui.safetensors",
     "adapter_scale": 1.0,
+    "adapter_scale_self": 1.0,
+    "adapter_scale_cross": 1.0,
+    "adapter_scale_mlp": 1.0,
     "vocal_language": "fr"
 }
 EOF
@@ -499,16 +503,23 @@ their own, but without caption the LLM has nothing to work from.
     "cover_noise_strength": 0.0,
     "repainting_start":     0,
     "repainting_end":       -1,
+    "latent_shift":         0.0,
+    "latent_rescale":       1.0,
+    "custom_timesteps":     "",
     "task_type":            "text2music",
     "track":                "",
     "infer_method":         "ode",
     "lm_mode":              "generate",
     "output_format":        "mp3",
     "peak_clip":            10,
+    "mp3_bitrate":          128,
     "synth_model":          "",
     "lm_model":             "",
     "adapter":              "",
-    "adapter_scale":        1.0
+    "adapter_scale":        1.0,
+    "adapter_scale_self":   1.0,
+    "adapter_scale_cross":  1.0,
+    "adapter_scale_mlp":    1.0
 }
 ```
 
@@ -667,10 +678,17 @@ Empty string keeps the currently loaded LM, or loads the first available one.
 Adapter name from the `--adapters` directory (e.g. `"singer-v2.safetensors"`
 or `"my-peft-adapter"`). Empty string means no adapter. Changing the adapter
 reloads the DiT (deltas are merged into weights at load time). Supported
-algorithm today: LoRA.
+algorithms today: LoRA and LoKr.
 
 **`adapter_scale`** (float, default `1.0`)
-Adapter scaling factor. Only used when `adapter` is set.
+Global adapter scaling factor. Only used when `adapter` is set.
+
+**`adapter_scale_self`**, **`adapter_scale_cross`**, **`adapter_scale_mlp`** (float, default `1.0`)
+Module-group adapter multipliers for self-attention, cross-attention, and MLP
+projection weights. Effective scale is `adapter_scale * module_scale`; adapter
+tensors outside those groups use only `adapter_scale`. Changing any adapter
+scale reloads the DiT because adapter deltas are merged into weights at load
+time.
 
 ### LM sampling (ace-lm)
 
@@ -769,9 +787,6 @@ Optional:
   --src-audio <file>      Source audio (WAV or MP3)
   --ref-audio <file>      Timbre reference audio (WAV or MP3)
 
-Audio encoding:
-  --mp3-bitrate <kbps>    MP3 bitrate (default: 128)
-
 Memory control:
   --vae-chunk <N>         Latent frames per tile (default: 1024)
   --vae-overlap <N>       Overlap frames per side (default: 64)
@@ -785,16 +800,18 @@ Debug:
 
 Model selection comes from the first request JSON. `synth_model` picks
 the DiT from the registry, `adapter` picks an adapter from `--adapters`,
-`output_format` picks the output encoder (mp3, wav16, wav24, wav32). When
-`synth_model` is empty the first DiT in the registry is used; the text
-encoder and the VAE are always the first in their respective buckets.
-Models are loaded once and reused across all requests.
+`vae` picks the VAE from the registry, `output_format` picks the output
+encoder (mp3, wav16, wav24, wav32). When `synth_model` or `vae` is empty
+the first entry in the respective bucket is used; the text encoder is
+always the first in the registry. Models are loaded once and reused
+across all requests.
 
 When `adapter` is set, deltas are merged into the DiT projection weights
 at load time (before QKV fusion and GPU upload). For LoRA, the safetensors
 file is parsed directly, each lora_A/lora_B pair is multiplied
-(`alpha/rank * scale * B @ A`), and the result is added to the base weight
-in F32 before requantizing back to the original GGUF type. This is a
+(`alpha/rank * effective_scale * B @ A`), and the result is added to the base
+weight in F32 before requantizing back to the original GGUF type. LoKr uses the
+same module-group effective scale when applying its Kronecker delta. This is a
 static merge: inference runs at full speed with no adapter overhead.
 The registry accepts either a safetensors file or a directory containing
 `adapter_model.safetensors` and `adapter_config.json` (PEFT format).
@@ -822,7 +839,7 @@ in one GPU pass.
 HTTP server exposing the same pipelines as `ace-lm`, `ace-synth`, and
 `ace-understand`. One binary, one port.
 
-POST /lm, POST /synth, and POST /understand are all **asynchronous**: they
+POST /lm, POST /synth, POST /understand and POST /vae are all **asynchronous**: they
 return a job ID immediately, push the request to a FIFO queue, and the single
 worker thread processes jobs in order. Clients poll GET /job?id=N for status
 and fetch results with GET /job?id=N&result=1.
@@ -871,9 +888,6 @@ Memory control:
   --vae-chunk <N>         Latent frames per tile (default: 1024)
   --vae-overlap <N>       Overlap frames per side (default: 64)
 
-Output:
-  --mp3-bitrate <kbps>    MP3 bitrate (default: 128)
-
 Server:
   --host <addr>           Listen address (default: 127.0.0.1)
   --port <N>              Listen port (default: 8080)
@@ -909,20 +923,29 @@ POST /lm                        Submit LM generation, returns job ID
 
 POST /synth                     Submit synth generation, returns job ID
   body: application/json AceRequest or [AceRequest, ...]
-  body: multipart/form-data (request + audio + ref_audio)
+  body: multipart/form-data (request + audio|src_latents + ref_audio|ref_latents)
+        latents win over audio when both are sent on the same side
   response: {"id":"2"}
 
 POST /understand                Submit understand, returns job ID
-  body: multipart/form-data (audio required, optional request JSON)
+  body: multipart/form-data (audio or src_latents required, optional request JSON)
   response: {"id":"3"}
+
+POST /vae                       Submit VAE encode or decode, returns job ID
+  body: multipart/form-data (exactly one of 'audio' or 'src_latents')
+        'audio' -> encode path (latents out)
+        'src_latents' -> decode path (audio out)
+  response: {"id":"4"}
 
 GET  /job?id=N                  Poll job status
   response: {"status":"running|done|failed|cancelled"}
 
 GET  /job?id=N&result=1         Fetch job result
-  LM/understand: application/json [AceRequest, ...]
-  synth jobs:    audio/mpeg or audio/wav (single track)
-  synth jobs:    multipart/mixed (batch, each part is raw audio)
+  lm:         application/json [AceRequest, ...]
+  synth:      multipart/mixed (one audio part per track + cover latent part)
+  understand: multipart/mixed (one json part + cover latent part)
+  vae encode: application/octet-stream (raw .vae bytes, no audio echo: client already has it)
+  vae decode: audio/mpeg or audio/wav (raw, no latent echo: client already has it)
 
 POST /job?id=N&cancel=1         Cancel a specific job
   response: {"status":"cancelled"}
@@ -938,6 +961,11 @@ GET  /logs                      SSE stream of server stderr
 
 GET  /                          Embedded WebUI (gzipped HTML)
 ```
+
+Latent payload format (src_latents, ref_latents, synth/understand response latent parts, /vae encode response body):
+raw f32 little-endian, flat [T, 64], no header. T = size / 256. Same byte
+layout neural-codec writes as `.vae` files. Hard cap T <= 15000 frames
+(matches the silence_latent buffer baked into the DiT GGUF), 413 over.
 
 `lm_model`, `synth_model`, `adapter`, `adapter_scale` fields in the JSON body
 select which model and adapter to load. `lm_mode` picks the LM instruction
@@ -958,7 +986,7 @@ default AceRequest (source of truth for webui dropdowns and placeholders):
     "vae": ["vae-BF16.gguf"]
   },
   "adapters": [],
-  "cli": { "max_batch": 1, "mp3_bitrate": 128 },
+  "cli": { "max_batch": 1 },
   "default": { "caption": "", "duration": 0, ... }
 }
 ```
@@ -1006,17 +1034,17 @@ Output:
   --q4                    Quantize latent to int4 (~6.8 kbit/s)
   --format <fmt>          WAV format: wav16, wav24, wav32 (default: wav16)
 
-Output naming: song.wav -> song.latent (f32) or song.nac8 (Q8) or song.nac4 (Q4)
-               song.latent -> song.wav
+Output naming: song.wav -> song.vae (f32) or song.nac8 (Q8) or song.nac4 (Q4)
+               song.vae -> song.wav
 
 Memory control:
   --vae-chunk <N>         Latent frames per tile (default: 1024)
   --vae-overlap <N>       Overlap frames per side (default: 64)
 
 Latent formats (decode auto-detects):
-  f32:  flat [T, 64] f32, no header. ~51 kbit/s.
-  NAC8: header + per-frame Q8. ~13 kbit/s.
-  NAC4: header + per-frame Q4. ~6.8 kbit/s.
+  .vae:  flat [T, 64] f32, no header. ~51 kbit/s.
+  .nac8: header + per-frame Q8. ~13 kbit/s.
+  .nac4: header + per-frame Q4. ~6.8 kbit/s.
 ```
 
 The encoder is the symmetric mirror of the decoder: same snake activations,
@@ -1026,14 +1054,16 @@ conv1d for upsampling. No new GGML ops. Downsample 2x4x4x6x10 = 1920x.
 48kHz stereo audio is compressed to 64-dimensional latent frames at 25 Hz.
 Three output formats, decode auto-detects from file content:
 
-| Format | Frame size | Bitrate | 3 min song | vs f32 (cossim) |
-|--------|-----------|---------|------------|-----------------|
-| f32    | 256B      | 51 kbit/s | 1.1 MB   | baseline        |
-| NAC8   | 66B       | 13 kbit/s | 290 KB   | 0.9999          |
-| NAC4   | 34B       | 6.8 kbit/s | 150 KB  | 0.989           |
+| Format | Frame size | Bitrate | 3 min song | vs .vae (cossim) |
+|--------|-----------|---------|------------|------------------|
+| .vae   | 256B      | 51 kbit/s | 1.1 MB   | baseline         |
+| .nac8  | 66B       | 13 kbit/s | 290 KB   | 0.9999           |
+| .nac4  | 34B       | 6.8 kbit/s | 150 KB  | 0.989            |
 
-NAC = Neural Audio Codec. The NAC8 and NAC4 file formats are headerless
-except for a 4-byte magic (`NAC8` or `NAC4`) and a uint32 frame count.
+NAC = Neural Audio Codec. The .nac8 and .nac4 file formats are headerless
+except for a 4-byte magic (`NAC8` or `NAC4`) and a uint32 frame count. The
+.vae file is the raw VAE encoder output (flat f32, no header), the same
+byte payload the HTTP API exchanges as latent multipart parts.
 Q8 quantization error is 39 dB below the VAE reconstruction error (free).
 Q4 quantization error is 16 dB below the VAE reconstruction error (inaudible
 on most material).
@@ -1106,10 +1136,10 @@ Debug:
   --dump <dir>            Dump tok_latents + tok_codes (skip LM)
 ```
 
-Model selection comes from the request JSON (`lm_model`, `synth_model`);
-when unset, the first LM and the first DiT in the registry are used, and
-the VAE is always the first in the registry. Without `--request`,
-understand defaults apply (temperature 0.3, top_p disabled).
+Model selection comes from the request JSON (`lm_model`, `synth_model`,
+`vae`); when unset, the first LM, first DiT and first VAE in the
+registry are used. Without `--request`, understand defaults apply
+(temperature 0.3, top_p disabled).
 
 ## Architecture
 

@@ -32,6 +32,7 @@ void request_init(AceRequest * r) {
     r->lm_top_p             = 0.9f;
     r->lm_top_k             = 0;
     r->lm_negative_prompt   = "";
+    r->lm_seed              = -1;
     r->use_cot_caption      = true;
     r->audio_codes          = "";
     r->inference_steps      = 0;     // 0 = auto (turbo: 8, base/sft: 50)
@@ -44,6 +45,9 @@ void request_init(AceRequest * r) {
     r->cover_noise_strength = 0.0f;
     r->repainting_start     = 0.0f;
     r->repainting_end       = -1.0f;
+    r->latent_shift         = 0.0f;
+    r->latent_rescale       = 1.0f;
+    r->custom_timesteps     = "";
     r->task_type            = TASK_TEXT2MUSIC;
     r->track                = "";
     r->infer_method         = INFER_ODE;
@@ -53,7 +57,12 @@ void request_init(AceRequest * r) {
     r->lm_model             = "";
     r->adapter              = "";
     r->adapter_scale        = 1.0f;
+    r->adapter_scale_self   = 1.0f;
+    r->adapter_scale_cross  = 1.0f;
+    r->adapter_scale_mlp    = 1.0f;
+    r->vae                  = "";
     r->peak_clip            = 10;
+    r->mp3_bitrate          = 128;
 }
 
 // helper: get yyjson string as std::string
@@ -96,6 +105,9 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     if ((v = yyjson_obj_get(obj, "infer_method")) && yyjson_is_str(v) && yyjson_get_len(v) > 0) {
         r->infer_method = yy_str(v);
     }
+    if ((v = yyjson_obj_get(obj, "custom_timesteps")) && yyjson_is_str(v)) {
+        r->custom_timesteps = yy_str(v);
+    }
     if ((v = yyjson_obj_get(obj, "lm_mode")) && yyjson_is_str(v) && yyjson_get_len(v) > 0) {
         r->lm_mode = yy_str(v);
     }
@@ -111,6 +123,9 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     if ((v = yyjson_obj_get(obj, "adapter")) && yyjson_is_str(v)) {
         r->adapter = yy_str(v);
     }
+    if ((v = yyjson_obj_get(obj, "vae")) && yyjson_is_str(v)) {
+        r->vae = yy_str(v);
+    }
 
     // ints
     if ((v = yyjson_obj_get(obj, "bpm")) && yyjson_is_num(v)) {
@@ -124,6 +139,9 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     }
     if ((v = yyjson_obj_get(obj, "seed")) && yyjson_is_num(v)) {
         r->seed = (int64_t) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "lm_seed")) && yyjson_is_num(v)) {
+        r->lm_seed = (int64_t) yyjson_get_num(v);
     }
     if ((v = yyjson_obj_get(obj, "lm_top_k")) && yyjson_is_num(v)) {
         r->lm_top_k = (int) yyjson_get_num(v);
@@ -172,11 +190,29 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     if ((v = yyjson_obj_get(obj, "repainting_end")) && yyjson_is_num(v)) {
         r->repainting_end = (float) yyjson_get_num(v);
     }
+    if ((v = yyjson_obj_get(obj, "latent_shift")) && yyjson_is_num(v)) {
+        r->latent_shift = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "latent_rescale")) && yyjson_is_num(v)) {
+        r->latent_rescale = (float) yyjson_get_num(v);
+    }
     if ((v = yyjson_obj_get(obj, "peak_clip")) && yyjson_is_num(v)) {
         r->peak_clip = (int) yyjson_get_num(v);
     }
+    if ((v = yyjson_obj_get(obj, "mp3_bitrate")) && yyjson_is_num(v)) {
+        r->mp3_bitrate = (int) yyjson_get_num(v);
+    }
     if ((v = yyjson_obj_get(obj, "adapter_scale")) && yyjson_is_num(v)) {
         r->adapter_scale = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "adapter_scale_self")) && yyjson_is_num(v)) {
+        r->adapter_scale_self = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "adapter_scale_cross")) && yyjson_is_num(v)) {
+        r->adapter_scale_cross = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "adapter_scale_mlp")) && yyjson_is_num(v)) {
+        r->adapter_scale_mlp = (float) yyjson_get_num(v);
     }
 
     // bool
@@ -349,6 +385,9 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     if (all || r->lm_negative_prompt != def.lm_negative_prompt) {
         yyjson_mut_obj_add_str(doc, root, "lm_negative_prompt", r->lm_negative_prompt.c_str());
     }
+    if (all || r->lm_seed != def.lm_seed) {
+        yyjson_mut_obj_add_sint(doc, root, "lm_seed", r->lm_seed);
+    }
     if (all || r->use_cot_caption != def.use_cot_caption) {
         yyjson_mut_obj_add_bool(doc, root, "use_cot_caption", r->use_cot_caption);
     }
@@ -398,6 +437,15 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     if (all || r->repainting_end != def.repainting_end) {
         yyjson_mut_obj_add_real(doc, root, "repainting_end", r->repainting_end);
     }
+    if (all || r->latent_shift != def.latent_shift) {
+        yyjson_mut_obj_add_real(doc, root, "latent_shift", r->latent_shift);
+    }
+    if (all || r->latent_rescale != def.latent_rescale) {
+        yyjson_mut_obj_add_real(doc, root, "latent_rescale", r->latent_rescale);
+    }
+    if (all || r->custom_timesteps != def.custom_timesteps) {
+        yyjson_mut_obj_add_str(doc, root, "custom_timesteps", r->custom_timesteps.c_str());
+    }
     // task_type is always emitted: it is the single source of truth for the
     // request and must be explicit in any round trip.
     yyjson_mut_obj_add_str(doc, root, "task_type", r->task_type.c_str());
@@ -406,6 +454,9 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     }
     if (all || r->peak_clip != def.peak_clip) {
         yyjson_mut_obj_add_int(doc, root, "peak_clip", r->peak_clip);
+    }
+    if (all || r->mp3_bitrate != def.mp3_bitrate) {
+        yyjson_mut_obj_add_int(doc, root, "mp3_bitrate", r->mp3_bitrate);
     }
     if (all || r->synth_model != def.synth_model) {
         yyjson_mut_obj_add_str(doc, root, "synth_model", r->synth_model.c_str());
@@ -418,6 +469,18 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     }
     if (all || r->adapter_scale != def.adapter_scale) {
         yyjson_mut_obj_add_real(doc, root, "adapter_scale", r->adapter_scale);
+    }
+    if (all || r->adapter_scale_self != def.adapter_scale_self) {
+        yyjson_mut_obj_add_real(doc, root, "adapter_scale_self", r->adapter_scale_self);
+    }
+    if (all || r->adapter_scale_cross != def.adapter_scale_cross) {
+        yyjson_mut_obj_add_real(doc, root, "adapter_scale_cross", r->adapter_scale_cross);
+    }
+    if (all || r->adapter_scale_mlp != def.adapter_scale_mlp) {
+        yyjson_mut_obj_add_real(doc, root, "adapter_scale_mlp", r->adapter_scale_mlp);
+    }
+    if (all || r->vae != def.vae) {
+        yyjson_mut_obj_add_str(doc, root, "vae", r->vae.c_str());
     }
 
     return doc;
@@ -475,6 +538,12 @@ void request_dump(const AceRequest * r, FILE * f) {
     if (r->repainting_start != 0.0f || r->repainting_end >= 0.0f) {
         fprintf(f, "[Request] repaint: start=%.1f end=%.1f\n", r->repainting_start, r->repainting_end);
     }
+    if (r->latent_shift != 0.0f || r->latent_rescale != 1.0f) {
+        fprintf(f, "[Request] latent post: shift=%.3f rescale=%.3f\n", r->latent_shift, r->latent_rescale);
+    }
+    if (!r->custom_timesteps.empty()) {
+        fprintf(f, "[Request] custom_timesteps: %s\n", r->custom_timesteps.c_str());
+    }
     fprintf(f, "[Request] task_type: %s\n", r->task_type.c_str());
     if (!r->track.empty()) {
         fprintf(f, "[Request] track: %s\n", r->track.c_str());
@@ -485,6 +554,9 @@ void request_dump(const AceRequest * r, FILE * f) {
     if (r->peak_clip != 10) {
         fprintf(f, "[Request] peak_clip: %d\n", r->peak_clip);
     }
+    if (r->output_format == "mp3" && r->mp3_bitrate != 128) {
+        fprintf(f, "[Request] mp3_bitrate: %d kbps\n", r->mp3_bitrate);
+    }
     if (!r->synth_model.empty()) {
         fprintf(f, "[Request] synth_model: %s\n", r->synth_model.c_str());
     }
@@ -492,7 +564,11 @@ void request_dump(const AceRequest * r, FILE * f) {
         fprintf(f, "[Request] lm_model: %s\n", r->lm_model.c_str());
     }
     if (!r->adapter.empty()) {
-        fprintf(f, "[Request] adapter: %s (scale=%.2f)\n", r->adapter.c_str(), r->adapter_scale);
+        fprintf(f, "[Request] adapter: %s (scale=%.2f self=%.2f cross=%.2f mlp=%.2f)\n", r->adapter.c_str(),
+                r->adapter_scale, r->adapter_scale_self, r->adapter_scale_cross, r->adapter_scale_mlp);
+    }
+    if (!r->vae.empty()) {
+        fprintf(f, "[Request] vae: %s\n", r->vae.c_str());
     }
     fprintf(f, "[Request] audio_codes: %s\n", r->audio_codes.empty() ? "(none)" : "(present)");
 }
@@ -501,5 +577,12 @@ void request_resolve_seed(AceRequest * r) {
     if (r->seed < 0) {
         std::random_device rd;
         r->seed = (int64_t) rd();
+    }
+}
+
+void request_resolve_lm_seed(AceRequest * r) {
+    if (r->lm_seed < 0) {
+        std::random_device rd;
+        r->lm_seed = (int64_t) rd();
     }
 }

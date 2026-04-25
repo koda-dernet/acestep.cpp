@@ -69,7 +69,13 @@ export default defineConfig({
 	// dev server: proxy ace-server endpoints
 	server: {
 		// allow tunnels (ngrok, etc.); default only allows localhost and *.localhost
-		allowedHosts: ['.ngrok-free.dev', '.ngrok-free.app', '.ngrok.io', '.loca.lt', '.trycloudflare.com'],
+		allowedHosts: [
+			'.ngrok-free.dev',
+			'.ngrok-free.app',
+			'.ngrok.io',
+			'.loca.lt',
+			'.trycloudflare.com'
+		],
 		proxy: {
 			'/lm': ACE_SERVER,
 			'/synth': ACE_SERVER,

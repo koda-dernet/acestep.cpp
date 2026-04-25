@@ -3,7 +3,9 @@
 	import { slide } from 'svelte/transition';
 	import {
 		easeEmphasizedDecel,
-		Button, Icon, Chip,
+		Button,
+		Icon,
+		Chip,
 		TextFieldOutlined,
 		TextFieldOutlinedMultiline,
 		SelectOutlined
@@ -34,6 +36,7 @@
 		pollJob,
 		jobResultJson,
 		jobResultBlobs,
+		vaeDecode,
 		cancelJob
 	} from '../lib/api.js';
 	import { putSong, getAllSongs, saveJob, loadJob, loadJobId, clearJob } from '../lib/db.js';
@@ -70,6 +73,7 @@
 	let d = $derived(app.props?.default);
 	let ditModels = $derived(app.props?.models.dit ?? []);
 	let lmModels = $derived(app.props?.models.lm ?? []);
+	let vaeModels = $derived(app.props?.models.vae ?? []);
 	let adapterList = $derived(app.props?.adapters ?? []);
 	let adapterStale = $derived(
 		!!app.request.adapter && !adapterList.includes(String(app.request.adapter))
@@ -99,6 +103,12 @@
 			app.request.infer_method = d.infer_method;
 		if (app.request.dcw_mode == null || app.request.dcw_mode === '')
 			app.request.dcw_mode = d.dcw_mode;
+		if (app.request.adapter_scale == null) app.request.adapter_scale = d.adapter_scale;
+		if (app.request.adapter_scale_self == null)
+			app.request.adapter_scale_self = d.adapter_scale_self;
+		if (app.request.adapter_scale_cross == null)
+			app.request.adapter_scale_cross = d.adapter_scale_cross;
+		if (app.request.adapter_scale_mlp == null) app.request.adapter_scale_mlp = d.adapter_scale_mlp;
 	});
 
 	// DiT input indicators
@@ -193,10 +203,10 @@
 			busySynth = true;
 			pollJob(synthJob.id)
 				.then(() => jobResultBlobs(synthJob.id))
-				.then(async (blobs) => {
+				.then(async ({ audios, latents }) => {
 					clearJob('synth');
 					const now = Date.now();
-					for (let i = blobs.length - 1; i >= 0; i--) {
+					for (let i = audios.length - 1; i >= 0; i--) {
 						const t = synthJob.tracks[i] || {
 							caption: '',
 							seed: 0,
@@ -213,7 +223,8 @@
 							seed: t.seed,
 							duration: t.duration,
 							request: t.request,
-							audio: blobs[i]
+							audio: audios[i],
+							...(latents ? { latents } : {})
 						};
 						await putSong(song);
 					}
@@ -281,6 +292,11 @@
 			return;
 		}
 
+		if (ext === 'vae') {
+			openLatents(file);
+			return;
+		}
+
 		toast('Unsupported file type: ' + ext);
 	}
 
@@ -303,6 +319,44 @@
 		app.songs.unshift(song);
 		app.name = name;
 		toast('Opened: ' + name, 4000, true);
+	}
+
+	async function openLatents(file: File) {
+		const buf = await file.arrayBuffer();
+		if (buf.byteLength === 0 || buf.byteLength % 256 !== 0) {
+			toast('Invalid .vae file: size must be a multiple of 256 bytes (64 channels x f32)');
+			return;
+		}
+		const T = buf.byteLength / 256;
+		if (T > 15000) {
+			toast('Invalid .vae file: too long (max 15000 frames = 10 min)');
+			return;
+		}
+		const latentsBlob = new Blob([buf], { type: 'application/octet-stream' });
+		const name = file.name.replace(/\.vae$/i, '') || 'Imported';
+		try {
+			const jobId = await vaeDecode(latentsBlob, app.format);
+			await pollJob(jobId);
+			const { audios } = await jobResultBlobs(jobId);
+			if (!audios.length) throw new Error('Decode returned no audio');
+			const song: Song = {
+				name,
+				format: app.format,
+				created: Date.now(),
+				caption: '',
+				seed: 0,
+				duration: 0,
+				request: { caption: '' },
+				audio: audios[0],
+				latents: latentsBlob
+			};
+			song.id = await putSong(song);
+			app.songs.unshift(song);
+			app.name = name;
+			toast('Opened: ' + name, 4000, true);
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : String(e));
+		}
 	}
 
 	// snapshot app.request into a clean AceRequest; drop stale adapter
@@ -387,7 +441,7 @@
 			const userSeed = num(app.request.seed);
 			const hasSeed = userSeed != null && userSeed >= 0;
 
-			const synthParams = pickSections(app.request, ['flow', 'toolbar', 'routing']);
+			const synthParams = pickSections(app.request, ['flow', 'advanced', 'toolbar', 'routing']);
 			delete synthParams.seed;
 			delete synthParams.synth_batch_size;
 			if (synthParams.adapter && !adapterList.includes(String(synthParams.adapter)))
@@ -416,8 +470,10 @@
 				srcSong || refSong
 					? await synthSubmitWithAudio(
 							toSend,
-							srcSong?.audio ?? null,
-							refSong?.audio ?? null,
+							srcSong?.latents ? null : (srcSong?.audio ?? null),
+							srcSong?.latents ?? null,
+							refSong?.latents ? null : (refSong?.audio ?? null),
+							refSong?.latents ?? null,
 							app.format
 						)
 					: await synthSubmit(toSend, app.format);
@@ -435,11 +491,11 @@
 				}))
 			});
 			await pollJob(jobId);
-			const blobs = await jobResultBlobs(jobId);
+			const { audios, latents } = await jobResultBlobs(jobId);
 			clearJob('synth');
 
 			const now = Date.now();
-			for (let i = blobs.length - 1; i >= 0; i--) {
+			for (let i = audios.length - 1; i >= 0; i--) {
 				const r = expanded[i];
 				const task = r.task_type || 'text2music';
 				const suffix = [variant, task].filter((s) => s).join(' ');
@@ -451,7 +507,8 @@
 					seed: r.seed || 0,
 					duration: r.duration || 0,
 					request: r,
-					audio: blobs[i]
+					audio: audios[i],
+					...(latents ? { latents } : {})
 				} as Song;
 				song.id = await putSong(song);
 				app.songs.unshift(song);
@@ -484,6 +541,7 @@
 
 	let lmModelOptions = $derived(lmModels.map((n: string) => ({ text: n, value: n })));
 	let ditModelOptions = $derived(ditModels.map((n: string) => ({ text: n, value: n })));
+	let vaeModelOptions = $derived(vaeModels.map((n: string) => ({ text: n, value: n })));
 	let adapterOptions = $derived([
 		{ text: 'Disabled', value: '' },
 		...(adapterStale
@@ -532,7 +590,7 @@
 <form class="form ace-neutral-fields" onsubmit={(e) => e.preventDefault()}>
 	<input
 		type="file"
-		accept=".json,.mp3,.wav"
+		accept=".json,.mp3,.wav,.vae"
 		bind:this={fileInput}
 		onchange={onFileSelected}
 		hidden
@@ -567,10 +625,22 @@
 				/>
 				<SelectOutlined
 					label="DiT model"
-					options={ditModelOptions.length > 0 ? ditModelOptions : [{ text: 'Loading...', value: '' }]}
+					options={ditModelOptions.length > 0
+						? ditModelOptions
+						: [{ text: 'Loading...', value: '' }]}
 					value={app.request.synth_model || ''}
 					onchange={(e) => {
 						app.request.synth_model = (e.target as HTMLSelectElement).value;
+					}}
+				/>
+				<SelectOutlined
+					label="VAE"
+					options={vaeModelOptions.length > 0
+						? vaeModelOptions
+						: [{ text: 'Loading...', value: '' }]}
+					value={app.request.vae || ''}
+					onchange={(e) => {
+						app.request.vae = (e.target as HTMLSelectElement).value;
 					}}
 				/>
 				<div class="adapter-row">
@@ -587,6 +657,14 @@
 					<div class="adapter-scale">
 						<NumericTextFieldOutlined label="Scale" bind:value={app.request.adapter_scale} />
 					</div>
+				</div>
+				<div class="adapter-module-grid">
+					<NumericTextFieldOutlined label="Self attn" bind:value={app.request.adapter_scale_self} />
+					<NumericTextFieldOutlined
+						label="Cross attn"
+						bind:value={app.request.adapter_scale_cross}
+					/>
+					<NumericTextFieldOutlined label="MLP" bind:value={app.request.adapter_scale_mlp} />
 				</div>
 			</div>
 		{/if}
@@ -714,9 +792,7 @@
 	<div class="ace-panel">
 		<div class="panel-header-row">
 			<button class="panel-header" type="button" onclick={() => (panelFlow = !panelFlow)}>
-				<span class="chevron" class:open={panelFlow}
-					><Icon icon={iconExpandMore} size={18} /></span
-				>
+				<span class="chevron" class:open={panelFlow}><Icon icon={iconExpandMore} size={18} /></span>
 				Flow matching
 			</button>
 			<div class="panel-clear">
@@ -968,6 +1044,11 @@
 	.adapter-scale {
 		width: 5.5rem;
 		flex-shrink: 0;
+	}
+	.adapter-module-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0.75rem;
 	}
 
 	/* Lyrics block: multiline + instrumental chip stacked */

@@ -37,8 +37,6 @@ static void usage(const char * prog) {
             "adapter picks an adapter from --adapters, output_format picks the output\n"
             "extension. When synth_model is empty the first DiT in the registry is used;\n"
             "text-encoder and VAE are always the first in their registry bucket.\n\n"
-            "Audio encoding:\n"
-            "  --mp3-bitrate <kbps>    MP3 bitrate (default: 128)\n\n"
             "Memory control:\n"
             "  --vae-chunk <N>         Latent frames per tile (default: %d)\n"
             "  --vae-overlap <N>       Overlap frames per side (default: %d)\n\n"
@@ -72,7 +70,6 @@ int main(int argc, char ** argv) {
     bool                      clamp_fp16     = false;
     int                       vae_chunk      = params.vae_chunk;
     int                       vae_overlap    = params.vae_overlap;
-    int                       mp3_kbps       = 128;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--request")) {
@@ -100,8 +97,6 @@ int main(int argc, char ** argv) {
             vae_chunk = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--vae-overlap") && i + 1 < argc) {
             vae_overlap = atoi(argv[++i]);
-        } else if (!strcmp(argv[i], "--mp3-bitrate") && i + 1 < argc) {
-            mp3_kbps = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             usage(argv[0]);
             return 0;
@@ -167,6 +162,12 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "[Ace-Synth] FATAL: synth_model '%s' not found in registry\n", reqs[0].synth_model.c_str());
         return 1;
     }
+    const ModelEntry * vae_entry =
+        reqs[0].vae.empty() ? &registry.vae[0] : registry_find(registry.vae, reqs[0].vae.c_str());
+    if (!vae_entry) {
+        fprintf(stderr, "[Ace-Synth] FATAL: vae '%s' not found in registry\n", reqs[0].vae.c_str());
+        return 1;
+    }
     const AdapterEntry * adapter_entry = NULL;
     if (!reqs[0].adapter.empty()) {
         adapter_entry = registry_find_adapter(registry, reqs[0].adapter.c_str());
@@ -189,9 +190,12 @@ int main(int argc, char ** argv) {
     // Fill params from registry lookups and CLI flags.
     params.text_encoder_path = registry.text_enc[0].path.c_str();
     params.dit_path          = dit_entry->path.c_str();
-    params.vae_path          = registry.vae[0].path.c_str();
+    params.vae_path          = vae_entry->path.c_str();
     params.adapter_path      = adapter_entry ? adapter_entry->path.c_str() : NULL;
     params.adapter_scale     = reqs[0].adapter_scale;
+    params.adapter_scale_self  = reqs[0].adapter_scale_self;
+    params.adapter_scale_cross = reqs[0].adapter_scale_cross;
+    params.adapter_scale_mlp   = reqs[0].adapter_scale_mlp;
     params.use_fa            = use_fa;
     params.use_batch_cfg     = use_batch_cfg;
     params.clamp_fp16        = clamp_fp16;
@@ -296,7 +300,11 @@ int main(int argc, char ** argv) {
     }
 
     // Two-phase run: DiT resident for all groups, then VAE for all jobs.
-    const int rc = synth_batch_run(ctx, groups, src_interleaved, src_len, ref_interleaved, ref_len, all_audio.data());
+    // The CLI does not expose latent IO yet: source and reference are always
+    // audio, latent capture is disabled. The server reuses this runner with
+    // the full feature.
+    const int rc = synth_batch_run(ctx, groups, src_interleaved, src_len, NULL, 0, ref_interleaved, ref_len, NULL, 0,
+                                   all_audio.data());
     if (rc != 0) {
         fprintf(stderr, "[Ace-Synth] ERROR: batch run failed\n");
         for (auto & a : all_audio) {
@@ -317,7 +325,8 @@ int main(int argc, char ** argv) {
         const char * ext = is_mp3 ? ".mp3" : ".wav";
         char         out_path[1024];
         snprintf(out_path, sizeof(out_path), "%s%d%s", all_basenames[b].c_str(), all_synth_indices[b], ext);
-        if (!audio_write(out_path, all_audio[b].samples, all_audio[b].n_samples, 48000, mp3_kbps, wav_fmt)) {
+        if (!audio_write(out_path, all_audio[b].samples, all_audio[b].n_samples, 48000, groups[0][b].mp3_bitrate,
+                         wav_fmt)) {
             fprintf(stderr, "[Ace-Synth Batch%d] FATAL: failed to write %s\n", b, out_path);
         }
         ace_audio_free(&all_audio[b]);

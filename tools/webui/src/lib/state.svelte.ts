@@ -77,6 +77,13 @@ export function setRequest(incoming: AceRequest) {
 	if (!incoming.lm_model) incoming.lm_model = app.request.lm_model;
 	if (!incoming.adapter) incoming.adapter = app.request.adapter;
 	if (incoming.adapter_scale == null) incoming.adapter_scale = app.request.adapter_scale;
+	if (incoming.adapter_scale_self == null)
+		incoming.adapter_scale_self = app.request.adapter_scale_self;
+	if (incoming.adapter_scale_cross == null)
+		incoming.adapter_scale_cross = app.request.adapter_scale_cross;
+	if (incoming.adapter_scale_mlp == null)
+		incoming.adapter_scale_mlp = app.request.adapter_scale_mlp;
+	if (!incoming.vae) incoming.vae = app.request.vae;
 	app.request = incoming;
 	app.srcRangeStart = incoming.repainting_start ?? null;
 	app.srcRangeEnd = incoming.repainting_end ?? null;

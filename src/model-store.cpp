@@ -29,7 +29,7 @@ namespace {
 // pipeline authors cannot accidentally drift a key by leaving a field that
 // their kind does not care about at a different default than their peer.
 // LM: kind + path + max_seq + n_kv_sets. DiT: kind + path + adapter_path
-// + adapter_scale. Everything else: kind + path.
+// + adapter scales. Everything else: kind + path.
 struct ModelKeyHash {
     size_t operator()(const ModelKey & k) const noexcept {
         size_t h = std::hash<int>{}(static_cast<int>(k.kind));
@@ -39,10 +39,18 @@ struct ModelKeyHash {
             h ^= std::hash<int>{}(k.n_kv_sets) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         } else if (k.kind == MODEL_DIT) {
             h ^= std::hash<std::string>{}(k.adapter_path) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-            // adapter_scale: hash the raw bit pattern so 1.0f and 1.00001f are distinct.
-            uint32_t bits;
-            memcpy(&bits, &k.adapter_scale, sizeof(bits));
-            h ^= std::hash<uint32_t>{}(bits) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            // Adapter scales: hash raw bit patterns so tiny scale changes load distinct merged weights.
+            const float scales[] = {
+                k.adapter_scale,
+                k.adapter_scale_self,
+                k.adapter_scale_cross,
+                k.adapter_scale_mlp,
+            };
+            for (float scale : scales) {
+                uint32_t bits;
+                memcpy(&bits, &scale, sizeof(bits));
+                h ^= std::hash<uint32_t>{}(bits) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            }
         }
         return h;
     }
@@ -57,7 +65,9 @@ struct ModelKeyEq {
             return a.max_seq == b.max_seq && a.n_kv_sets == b.n_kv_sets;
         }
         if (a.kind == MODEL_DIT) {
-            return a.adapter_path == b.adapter_path && a.adapter_scale == b.adapter_scale;
+            return a.adapter_path == b.adapter_path && a.adapter_scale == b.adapter_scale &&
+                   a.adapter_scale_self == b.adapter_scale_self && a.adapter_scale_cross == b.adapter_scale_cross &&
+                   a.adapter_scale_mlp == b.adapter_scale_mlp;
         }
         return true;
     }
@@ -341,7 +351,13 @@ DiTGGML * store_require_dit(ModelStore * s, const ModelKey & k) {
     Timer        t;
     DiTGGML *    m       = new DiTGGML();
     const char * adapter = k.adapter_path.empty() ? nullptr : k.adapter_path.c_str();
-    if (!dit_ggml_load(m, k.path.c_str(), adapter, k.adapter_scale)) {
+    AdapterScales adapter_scales = {
+        k.adapter_scale,
+        k.adapter_scale_self,
+        k.adapter_scale_cross,
+        k.adapter_scale_mlp,
+    };
+    if (!dit_ggml_load(m, k.path.c_str(), adapter, adapter_scales)) {
         delete m;
         return nullptr;
     }

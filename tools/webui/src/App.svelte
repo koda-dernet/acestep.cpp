@@ -59,7 +59,15 @@
 		<div class="volume-control">
 			<Icon icon={volumeIcon} size={18} />
 			<div class="volume-slider">
-				<Slider bind:value={app.volume} min={0} max={1} step="any" size="xs" showValue={false} endStops={false} />
+				<Slider
+					bind:value={app.volume}
+					min={0}
+					max={1}
+					step="any"
+					size="xs"
+					showValue={false}
+					endStops={false}
+				/>
 			</div>
 		</div>
 
