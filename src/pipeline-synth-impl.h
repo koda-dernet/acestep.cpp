@@ -85,9 +85,6 @@ struct SynthState {
     // diffusion schedule
     std::vector<float> schedule;
 
-    // SDE mode: inject fresh noise at each denoising step (vs ODE pure integration)
-    bool use_sde;
-
     // per-batch seeds (for reproducible SDE re-noising: seed + step offset)
     std::vector<int64_t> seeds;
 

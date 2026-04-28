@@ -9,10 +9,12 @@
 #include "dit-sampler.h"
 #include "philox.h"
 #include "pipeline-synth-impl.h"
+#include "schedulers/scheduler-registry.h"
 #include "task-types.h"
 #include "vae-enc.h"
 
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -227,13 +229,124 @@ void ops_build_schedule(SynthState & s) {
             fprintf(stderr, "[Build-Schedule] Custom timesteps: %d steps\n", s.num_steps);
             return;
         }
-        fprintf(stderr, "[Build-Schedule] WARN: custom_timesteps needs >= 2 values, falling back to shift\n");
+        fprintf(stderr, "[Build-Schedule] WARN: custom_timesteps needs >= 2 values, falling back to scheduler\n");
     }
-    // Default: t_i = shift * t / (1 + (shift-1)*t) with t = 1 - i/steps
+
+    std::string ss = s.rr.schedule_method.empty() ? std::string(SCHEDULE_LINEAR) : s.rr.schedule_method;
     s.schedule.resize(s.num_steps);
-    for (int i = 0; i < s.num_steps; i++) {
-        float t       = 1.0f - (float) i / (float) s.num_steps;
-        s.schedule[i] = s.shift * t / (1.0f + (s.shift - 1.0f) * t);
+
+    // Composite: "composite:<A>+<B>:<crossover>:<split>"
+    if (ss.rfind("composite:", 0) == 0) {
+        const char * body = ss.c_str() + 10;
+        const char * plus = strchr(body, '+');
+        if (!plus) {
+            fprintf(stderr, "[Build-Schedule] WARNING: malformed composite '%s' (no '+'), using linear\n", ss.c_str());
+            scheduler_linear(s.schedule.data(), s.num_steps, s.shift);
+            return;
+        }
+        std::string       name_a(body, plus - body);
+        const char *      after_plus = plus + 1;
+        const char *      colon1     = strchr(after_plus, ':');
+        std::string       name_b;
+        float             crossover = 0.0f, split = 0.5f;
+        if (colon1) {
+            name_b    = std::string(after_plus, colon1 - after_plus);
+            crossover = (float) atof(colon1 + 1);
+            const char * colon2 = strchr(colon1 + 1, ':');
+            if (colon2) {
+                split = (float) atof(colon2 + 1);
+            }
+        } else {
+            name_b = std::string(after_plus);
+        }
+        if (crossover < 0.0f) {
+            crossover = 0.0f;
+        }
+        if (crossover > 1.0f) {
+            crossover = 1.0f;
+        }
+        if (split < 0.0f) {
+            split = 0.0f;
+        }
+        if (split > 1.0f) {
+            split = 1.0f;
+        }
+
+        const SchedulerInfo * sched_a = scheduler_lookup(name_a.c_str());
+        const SchedulerInfo * sched_b = scheduler_lookup(name_b.c_str());
+        if (!sched_a) {
+            sched_a = scheduler_lookup("linear");
+        }
+        if (!sched_b) {
+            sched_b = scheduler_lookup("linear");
+        }
+        std::vector<float> va(s.num_steps), vb(s.num_steps);
+        sched_a->fn(va.data(), s.num_steps, s.shift);
+        sched_b->fn(vb.data(), s.num_steps, s.shift);
+        float zone_lo = split - crossover * 0.5f;
+        float zone_hi = split + crossover * 0.5f;
+        for (int i = 0; i < s.num_steps; i++) {
+            float frac = (float) i / (float) s.num_steps;
+            float w;
+            if (crossover < 1e-6f || frac <= zone_lo) {
+                w = (frac < split) ? 0.0f : 1.0f;
+            } else if (frac >= zone_hi) {
+                w = 1.0f;
+            } else {
+                w = (frac - zone_lo) / (zone_hi - zone_lo);
+            }
+            s.schedule[i] = (1.0f - w) * va[i] + w * vb[i];
+        }
+        for (int i = 1; i < s.num_steps; i++) {
+            if (s.schedule[i] > s.schedule[i - 1]) {
+                s.schedule[i] = s.schedule[i - 1];
+            }
+        }
+        scheduler_clamp(s.schedule.data(), s.num_steps);
+        fprintf(stderr, "[Build-Schedule] Composite %s+%s cross=%.2f split=%.2f, %d steps, shift=%.2f\n",
+                sched_a->name, sched_b->name, crossover, split, s.num_steps, s.shift);
+        return;
+    }
+
+    const SchedulerInfo * sched = scheduler_lookup(ss.c_str());
+    if (!sched) {
+        fprintf(stderr, "[Build-Schedule] WARNING: unknown scheduler '%s', using linear\n", ss.c_str());
+        sched = scheduler_lookup("linear");
+    }
+
+    if (ss.rfind("power:", 0) == 0 && ss.size() > 6) {
+        float p = (float) atof(ss.c_str() + 6);
+        if (p < 0.1f) {
+            p = 2.0f;
+        }
+        for (int i = 0; i < s.num_steps; i++) {
+            float frac        = (float) i / (float) s.num_steps;
+            s.schedule[i] = powf(1.0f - frac, p);
+        }
+        scheduler_clamp(s.schedule.data(), s.num_steps);
+        scheduler_apply_shift(s.schedule.data(), s.num_steps, s.shift);
+        fprintf(stderr, "[Build-Schedule] Power p=%.2f, %d steps, shift=%.2f\n", p, s.num_steps, s.shift);
+    } else if (ss.rfind("beta:", 0) == 0 && ss.size() > 5) {
+        double alpha = 0.5, beta = 0.7;
+        const char * p1 = ss.c_str() + 5;
+        alpha           = atof(p1);
+        const char * colon = strchr(p1, ':');
+        if (colon) {
+            beta = atof(colon + 1);
+        }
+        if (alpha < 0.01) {
+            alpha = 0.5;
+        }
+        if (beta < 0.01) {
+            beta = 0.7;
+        }
+        scheduler_beta_custom(s.schedule.data(), s.num_steps, s.shift, alpha, beta);
+        fprintf(stderr, "[Build-Schedule] Beta α=%.2f β=%.2f, %d steps, shift=%.2f\n", alpha, beta, s.num_steps,
+                s.shift);
+    } else {
+        sched->fn(s.schedule.data(), s.num_steps, s.shift);
+        fprintf(stderr, "[Build-Schedule] %s (%s), %d steps, shift=%.2f\n", sched->display_name, sched->name,
+                s.num_steps, s.shift);
     }
 }
 
@@ -696,7 +809,7 @@ void ops_init_noise(const AceSynth * ctx, const AceRequest * reqs, int batch_n, 
         s.seeds[b]  = reqs[b].seed;
         philox_randn(reqs[b].seed, dst, s.Oc * s.T, /*bf16_round=*/true);
         fprintf(stderr, "[Init-Noise Batch%d] Philox noise seed=%lld, [%d, %d]%s\n", b, (long long) reqs[b].seed, s.T,
-                s.Oc, s.use_sde ? " (SDE)" : "");
+                s.Oc, (s.rr.infer_method == INFER_SDE) ? " (SDE)" : "");
     }
 
     // cover_noise_strength: blend initial noise with clean source latents.
@@ -777,7 +890,9 @@ int ops_dit_generate(const AceSynth * ctx, int batch_n, SynthState & s, bool (*c
         s.schedule.data(), s.output.data(), s.guidance_scale, &s.dbg,
         s.context_silence.empty() ? nullptr : s.context_silence.data(), s.cover_steps, cancel, cancel_data,
         s.per_S.data(), s.per_enc_S.data(), s.enc_hidden_nc.empty() ? nullptr : s.enc_hidden_nc.data(),
-        s.per_enc_S_nc_final.empty() ? nullptr : s.per_enc_S_nc_final.data(), s.use_sde, s.seeds.data(),
+        s.per_enc_S_nc_final.empty() ? nullptr : s.per_enc_S_nc_final.data(),
+        (s.rr.infer_method.empty() || s.rr.infer_method == INFER_ODE) ? "euler" : s.rr.infer_method.c_str(),
+        s.seeds.data(),
         ctx->params.use_batch_cfg, s.rr.dcw_scaler, s.rr.dcw_high_scaler, s.rr.dcw_mode.c_str());
     if (dit_rc != 0) {
         return -1;

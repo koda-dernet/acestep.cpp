@@ -15,9 +15,12 @@ inline constexpr const char * TASK_LEGO        = "lego";
 inline constexpr const char * TASK_EXTRACT     = "extract";
 inline constexpr const char * TASK_COMPLETE    = "complete";
 
-// inference method identifiers (DiT diffusion solver)
+// inference method identifiers (DiT diffusion solver); see solvers/solver-registry.h
 inline constexpr const char * INFER_ODE = "ode";
 inline constexpr const char * INFER_SDE = "sde";
+
+// flow-matching timestep schedule (DiT); see schedulers/scheduler-registry.h
+inline constexpr const char * SCHEDULE_LINEAR = "linear";
 
 // DCW mode identifiers (Differential Correction in Wavelet domain).
 // "low":    correct low-frequency sub-band only.

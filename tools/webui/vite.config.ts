@@ -80,6 +80,8 @@ function aceGzipPlugin() {
 }
 
 export default defineConfig({
+	// ensure Rollup gets a root-relative HTML entry (Vite 7 rejects absolute "fileName"s)
+	root: __dirname,
 	// functionsMixins: @apply mixins in m3-svelte <style> (must run before svelte())
 	plugins: [functionsMixins({ deps: ['m3-svelte'] }), svelte(), viteSingleFile(), aceGzipPlugin()],
 
@@ -108,7 +110,11 @@ export default defineConfig({
 	},
 
 	build: {
+		outDir: 'dist',
 		assetsInlineLimit: Infinity,
-		cssCodeSplit: false
+		cssCodeSplit: false,
+		rollupOptions: {
+			input: 'index.html'
+		}
 	}
 });

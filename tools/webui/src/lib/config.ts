@@ -19,6 +19,12 @@ export const TASK_COMPLETE = 'complete';
 export const INFER_ODE = 'ode';
 export const INFER_SDE = 'sde';
 
+/** Default timestep schedule id (mirrors SCHEDULE_LINEAR / request defaults). */
+export const SCHEDULE_LINEAR = 'linear';
+
+/** Sentinel for schedule preset dropdown when `schedule_method` is parameterized / unknown. */
+export const SCHEDULE_CUSTOM_SENTINEL = '__custom__';
+
 // DCW modes (mirrors task-types.h DCW_MODE_*)
 export const DCW_MODE_LOW = 'low';
 export const DCW_MODE_HIGH = 'high';

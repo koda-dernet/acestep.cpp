@@ -50,6 +50,8 @@
 		TASK_COMPLETE,
 		INFER_ODE,
 		INFER_SDE,
+		SCHEDULE_LINEAR,
+		SCHEDULE_CUSTOM_SENTINEL,
 		DCW_MODE_LOW,
 		DCW_MODE_HIGH,
 		DCW_MODE_DOUBLE,
@@ -101,6 +103,8 @@
 			app.request.task_type = d.task_type;
 		if (app.request.infer_method == null || app.request.infer_method === '')
 			app.request.infer_method = d.infer_method;
+		if (app.request.schedule_method == null || app.request.schedule_method === '')
+			app.request.schedule_method = d.schedule_method ?? SCHEDULE_LINEAR;
 		if (app.request.dcw_mode == null || app.request.dcw_mode === '')
 			app.request.dcw_mode = d.dcw_mode;
 		if (app.request.adapter_scale == null) app.request.adapter_scale = d.adapter_scale;
@@ -559,9 +563,42 @@
 		{ text: 'Complete: auto-arrange around a partial track', value: TASK_COMPLETE }
 	];
 	let methodOptions = [
-		{ text: 'ODE Euler', value: INFER_ODE },
-		{ text: 'SDE Stochastic', value: INFER_SDE }
+		{ text: 'ODE → Euler (legacy)', value: INFER_ODE },
+		{ text: 'Euler', value: 'euler' },
+		{ text: 'SDE stochastic', value: INFER_SDE },
+		{ text: 'Heun (2× forward/step)', value: 'heun' },
+		{ text: 'RK4 (4× forward/step)', value: 'rk4' },
+		{ text: 'RK5 (6× forward/step)', value: 'rk5' },
+		{ text: 'DPM++ 2M', value: 'dpm2m' },
+		{ text: 'DPM++ 3M', value: 'dpm3m' },
+		{ text: 'DPM++ 2M adaptive', value: 'dpm2m_ada' },
+		{ text: 'JKASS fast', value: 'jkass_fast' },
+		{ text: 'JKASS quality', value: 'jkass_quality' },
+		{ text: 'STORK 2', value: 'stork2' },
+		{ text: 'STORK 4', value: 'stork4' },
+		{ text: 'DOPRI5', value: 'dopri5' },
+		{ text: 'DOP853', value: 'dop853' },
+		{ text: 'Gauss–Legendre 2s', value: 'gl2s' }
 	];
+
+	const schedulePresetOptions = [
+		{ text: 'Custom / parameterized…', value: SCHEDULE_CUSTOM_SENTINEL },
+		{ text: 'Linear', value: 'linear' },
+		{ text: 'Cosine', value: 'cosine' },
+		{ text: 'DDIM uniform', value: 'ddim_uniform' },
+		{ text: 'SGM uniform (Karras)', value: 'sgm_uniform' },
+		{ text: 'Karras alias', value: 'karras' },
+		{ text: 'Tangent (bong)', value: 'bong_tangent' },
+		{ text: 'Linear–quadratic', value: 'linear_quadratic' },
+		{ text: 'Power (default exp)', value: 'power' },
+		{ text: 'Beta 57', value: 'beta57' }
+	];
+
+	let schedulePresetSelectValue = $derived.by(() => {
+		const raw = (app.request.schedule_method ?? '').trim() || SCHEDULE_LINEAR;
+		const known = schedulePresetOptions.some((o) => o.value === raw && o.value !== SCHEDULE_CUSTOM_SENTINEL);
+		return known ? raw : SCHEDULE_CUSTOM_SENTINEL;
+	});
 	let dcwOptions = [
 		{ text: 'Low', value: DCW_MODE_LOW },
 		{ text: 'High', value: DCW_MODE_HIGH },
@@ -837,7 +874,22 @@
 					<NumericTextFieldOutlined label="Seed" bind:value={app.request.seed} />
 				</div>
 				<SelectOutlined
-					label="Method"
+					label="Schedule preset"
+					options={schedulePresetOptions}
+					value={schedulePresetSelectValue}
+					onchange={(e) => {
+						const v = (e.target as HTMLSelectElement).value;
+						if (v === SCHEDULE_CUSTOM_SENTINEL) return;
+						app.request.schedule_method = v;
+					}}
+				/>
+				<TextFieldOutlined
+					label="Schedule method"
+					bind:value={app.request.schedule_method}
+					placeholder="linear · cosine · power:2 · composite:linear+cosine:0.5:0.5 …"
+				/>
+				<SelectOutlined
+					label="Solver (infer_method)"
 					options={methodOptions}
 					value={app.request.infer_method || ''}
 					onchange={(e) => {
@@ -990,7 +1042,8 @@
 		border: 1px solid var(--m3c-outline-variant);
 		border-radius: var(--m3-shape-large);
 		background: var(--m3c-surface);
-		overflow: hidden;
+		/* Must stay visible so native <select> popup lists aren’t clipped (overflow:hidden kills popovers). */
+		overflow: visible;
 	}
 	.panel-header {
 		display: flex;

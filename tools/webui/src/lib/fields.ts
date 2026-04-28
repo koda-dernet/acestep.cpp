@@ -53,6 +53,7 @@ export const FIELDS: readonly FieldDef[] = [
 	{ key: 'cover_noise_strength', section: 'flow', type: 'num' },
 	{ key: 'repainting_start', section: 'flow', type: 'num' },
 	{ key: 'repainting_end', section: 'flow', type: 'num' },
+	{ key: 'schedule_method', section: 'flow', type: 'str' },
 	{ key: 'seed', section: 'flow', type: 'num' },
 
 	// advanced and post-processing: cleared by its own Clear, preserved across Compose

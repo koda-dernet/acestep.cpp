@@ -1,0 +1,11 @@
+{
+    "lm_model": "acestep-5Hz-lm-4B-Q8_0.gguf",
+    "synth_model": "acestep-v15-turbo-Q8_0.gguf",
+    "caption": "Short chill ambient pad",
+    "vocal_language": "unknown",
+    "inference_steps": 8,
+    "guidance_scale": 1.0,
+    "shift": 3.0,
+    "schedule_method": "cosine",
+    "infer_method": "rk4"
+}

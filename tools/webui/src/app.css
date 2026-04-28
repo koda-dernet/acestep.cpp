@@ -128,6 +128,17 @@ body {
 	top: 0.3125rem;
 }
 
+/*
+ * Long <select> lists: cap picker height so options scroll instead of extending past the viewport.
+ * Uses the styleable-select picker surface where supported (see ::picker(select)).
+ */
+@supports selector(select::picker(select)) {
+	.panel-form select::picker(select) {
+		max-block-size: min(70dvh, 22rem);
+		overflow-y: auto;
+	}
+}
+
 /* Waveform: bars are tinted in Waveform.svelte from app.dark (canvas cannot rely on light-dark() strings) */
 
 @keyframes ace-toast-in {

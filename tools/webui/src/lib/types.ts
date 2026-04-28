@@ -32,6 +32,8 @@ export interface AceRequest {
 	latent_shift?: number;
 	latent_rescale?: number;
 	custom_timesteps?: string;
+	/** Timestep spacing: linear, cosine, ddim_uniform, power:p, composite:… (server defaults to linear). */
+	schedule_method?: string;
 	task_type?: string;
 	track?: string;
 	infer_method?: string;

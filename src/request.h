@@ -83,6 +83,11 @@ struct AceRequest {
     // target dropped by the sampler, so a CSV of N values yields N-1 steps.
     std::string custom_timesteps;  // ""
 
+    // Timestep spacing algorithm (ignored when custom_timesteps is set).
+    // Names match schedulers/scheduler-registry.h, e.g. "linear", "cosine",
+    // "sgm_uniform", "power:2.5", "beta:0.5:0.7", "composite:A+B:cross:split".
+    std::string schedule_method;  // "linear"
+
     // task type: one of text2music, cover, cover-nofsq, repaint, lego, extract, complete.
     // Default: text2music.
     std::string task_type;  // "text2music"
