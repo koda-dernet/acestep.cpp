@@ -22,7 +22,7 @@ function load(): Saved {
 				format: ['mp3', 'wav16', 'wav24', 'wav32'].includes(parsed.format) ? parsed.format : 'mp3',
 				dark: parsed.dark ?? true,
 				logsOpen: parsed.logsOpen ?? true,
-				request: parsed.request || { caption: '' }
+				request: parsed.request || { caption: '', use_cot_caption: true }
 			};
 		}
 	} catch {
@@ -34,7 +34,7 @@ function load(): Saved {
 		format: 'mp3',
 		dark: false,
 		logsOpen: true,
-		request: { caption: '' }
+		request: { caption: '', use_cot_caption: true }
 	};
 }
 
@@ -84,6 +84,7 @@ export function setRequest(incoming: AceRequest) {
 	if (incoming.adapter_scale_mlp == null)
 		incoming.adapter_scale_mlp = app.request.adapter_scale_mlp;
 	if (!incoming.vae) incoming.vae = app.request.vae;
+	if (incoming.use_cot_caption === undefined) incoming.use_cot_caption = true;
 	app.request = incoming;
 	app.srcRangeStart = incoming.repainting_start ?? null;
 	app.srcRangeEnd = incoming.repainting_end ?? null;

@@ -7,6 +7,8 @@
 	import iconDelete from '@ktibow/iconset-material-symbols/delete';
 	import iconHearing from '@ktibow/iconset-material-symbols/hearing';
 	import iconMemory from '@ktibow/iconset-material-symbols/memory';
+	import iconVerticalAlignTop from '@ktibow/iconset-material-symbols/vertical-align-top';
+	import iconVerticalAlignBottom from '@ktibow/iconset-material-symbols/vertical-align-bottom';
 	import { app, setRequest, toast } from '../lib/state.svelte.js';
 	import { deleteSong, saveJob, clearJob, putSong } from '../lib/db.js';
 	import {
@@ -90,6 +92,8 @@
 
 	// analyze audio: send to /understand, fill form with detected metadata.
 	// persists the job under 'lm' key so page reload resumes polling.
+	// Uploads cached latents when present so the server skips VAE encode where possible.
+	// Understand enriches the analyzed card in place; cover/synth keep creating new cards.
 	async function scan() {
 		scanning = true;
 		try {
@@ -165,7 +169,7 @@
 		if (song.latents || song.id == null) return;
 		scanning = true;
 		try {
-			const jobId = await vaeEncode(song.audio);
+			const jobId = await vaeEncode(song.audio, app.request);
 			saveJob('lm', jobId);
 			await pollJob(jobId);
 			const latents = await jobResultLatents(jobId);
@@ -198,6 +202,36 @@
 		await deleteSong(song.id);
 		const idx = app.songs.findIndex((s) => s.id === song.id);
 		if (idx >= 0) app.songs.splice(idx, 1);
+	}
+
+	// Delete every track above this card (newer entries).
+	async function removeAbove() {
+		if (song.id == null) return;
+		const idx = app.songs.findIndex((s) => s.id === song.id);
+		if (idx <= 0) return;
+		const victims = app.songs.slice(0, idx);
+		for (const s of victims) {
+			if (s.id == null) continue;
+			if (app.refSongId === s.id) app.refSongId = null;
+			if (app.srcSongId === s.id) app.srcSongId = null;
+			await deleteSong(s.id);
+		}
+		app.songs.splice(0, idx);
+	}
+
+	// Delete every track below this card (older entries).
+	async function removeBelow() {
+		if (song.id == null) return;
+		const idx = app.songs.findIndex((s) => s.id === song.id);
+		if (idx < 0 || idx === app.songs.length - 1) return;
+		const victims = app.songs.slice(idx + 1);
+		for (const s of victims) {
+			if (s.id == null) continue;
+			if (app.refSongId === s.id) app.refSongId = null;
+			if (app.srcSongId === s.id) app.srcSongId = null;
+			await deleteSong(s.id);
+		}
+		app.songs.splice(idx + 1);
 	}
 
 	// MM:SS:XX (hundredths) for current position
@@ -246,6 +280,22 @@
 					</Button>
 					<Button variant="text" iconType="full" disabled={!song.latents} onclick={downloadLatents}>
 						<Icon icon={iconDownload} />
+					</Button>
+					<Button
+						variant="text"
+						iconType="full"
+						title="Delete newer tracks (above this card)"
+						onclick={removeAbove}
+					>
+						<Icon icon={iconVerticalAlignTop} />
+					</Button>
+					<Button
+						variant="text"
+						iconType="full"
+						title="Delete older tracks (below this card)"
+						onclick={removeBelow}
+					>
+						<Icon icon={iconVerticalAlignBottom} />
 					</Button>
 					<Button variant="text" iconType="full" onclick={remove}>
 						<Icon icon={iconDelete} />

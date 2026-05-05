@@ -205,12 +205,19 @@ static bool g_keep_loaded = false;
 // the result. the client polls GET /job?id=N until done, then fetches
 // the result with GET /job?id=N&result=1.
 // cancel: POST /job?id=N&cancel=1 sets the per-job flag.
+enum class JobStatus : int {
+    RUNNING   = 0,
+    DONE      = 1,
+    FAILED    = 2,
+    CANCELLED = 3,
+};
+
 struct Job {
-    std::string       id;
-    std::atomic<int>  status{ 0 };  // 0=running 1=done 2=failed 3=cancelled
-    std::string       result_body;
-    std::string       result_mime;
-    std::atomic<bool> cancel{ false };
+    std::string            id;
+    std::atomic<JobStatus> status{ JobStatus::RUNNING };
+    std::string            result_body;
+    std::string            result_mime;
+    std::atomic<bool>      cancel{ false };
 
     // memory ordering contract: result_body and result_mime are written
     // before status is stored (seq_cst). the client loads status (seq_cst)
@@ -261,19 +268,19 @@ static int latent_payload_validate(size_t size, int * http_code_out) {
     return T;
 }
 
-// Build a multipart/mixed body that bundles the primary payload (audio or
-// JSON) with the latent. Empty latent omits the latent part entirely. The
-// boundary is fixed and matches the existing batch format; the client splits
-// on it the same way for every endpoint.
+// Build a multipart/mixed body that bundles the primary payload with its
+// latents. The audio variant pairs one audio part with one latent part per
+// track, the JSON variant carries a single payload and one optional latent.
+// The boundary is fixed and matches the existing batch format; the client
+// splits on it the same way for every endpoint.
 static const char * MULTIPART_BOUNDARY = "ace-batch-boundary";
 
-static std::string multipart_build_audio_latent(const std::vector<std::string> & audio_parts,
-                                                const char *                     audio_mime,
-                                                const std::vector<float> &       latent,
-                                                int                              T_latent) {
+static std::string multipart_build_audio_latent(const std::vector<std::string> &        audio_parts,
+                                                const char *                            audio_mime,
+                                                const std::vector<std::vector<float>> & latents) {
     std::string body;
-    for (const auto & part : audio_parts) {
-        if (part.empty()) {
+    for (size_t i = 0; i < audio_parts.size(); i++) {
+        if (audio_parts[i].empty()) {
             continue;
         }
         body += "--";
@@ -281,15 +288,13 @@ static std::string multipart_build_audio_latent(const std::vector<std::string> &
         body += "\r\nContent-Type: ";
         body += audio_mime;
         body += "\r\n\r\n";
-        body += part;
+        body += audio_parts[i];
         body += "\r\n";
-    }
-    if (T_latent > 0 && !latent.empty()) {
         body += "--";
         body += MULTIPART_BOUNDARY;
         body += "\r\nContent-Type: application/octet-stream\r\n";
         body += "Content-Disposition: form-data; name=\"latent\"\r\n\r\n";
-        body.append(reinterpret_cast<const char *>(latent.data()), (size_t) T_latent * LATENT_FRAME_BYTES);
+        body.append(reinterpret_cast<const char *>(latents[i].data()), latents[i].size() * sizeof(float));
         body += "\r\n";
     }
     body += "--";
@@ -347,7 +352,7 @@ static std::shared_ptr<Job> job_create() {
         bool evicted = false;
         for (auto it = g_job_order.begin(); it != g_job_order.end(); ++it) {
             auto jit = g_jobs.find(*it);
-            if (jit == g_jobs.end() || jit->second->status.load() != 0) {
+            if (jit == g_jobs.end() || jit->second->status.load() != JobStatus::RUNNING) {
                 if (jit != g_jobs.end()) {
                     g_jobs.erase(jit);
                 }
@@ -369,19 +374,18 @@ static std::shared_ptr<Job> job_find(const std::string & id) {
     return it != g_jobs.end() ? it->second : nullptr;
 }
 
-static const char * job_status_str(int s) {
+static const char * job_status_str(JobStatus s) {
     switch (s) {
-        case 0:
+        case JobStatus::RUNNING:
             return "running";
-        case 1:
+        case JobStatus::DONE:
             return "done";
-        case 2:
+        case JobStatus::FAILED:
             return "failed";
-        case 3:
+        case JobStatus::CANCELLED:
             return "cancelled";
-        default:
-            return "unknown";
     }
+    return "unknown";
 }
 
 // log capture: intercept stderr via pipe, forward to terminal + ring buffer.
@@ -548,7 +552,7 @@ static std::string resolve_name(const std::vector<ModelEntry> & bucket,
 // LM worker: generates metadata + lyrics + codes, stores JSON result in job.
 static void lm_worker(std::shared_ptr<Job> job, AceRequest ace_req, int lm_batch_size, int mode) {
     if (job->cancel.load()) {
-        job->status.store(3);
+        job->status.store(JobStatus::CANCELLED);
         return;
     }
 
@@ -557,7 +561,7 @@ static void lm_worker(std::shared_ptr<Job> job, AceRequest ace_req, int lm_batch
     const ModelEntry * entry   = registry_find(g_registry.lm, lm_name.c_str());
     if (!entry) {
         fprintf(stderr, "[Server] LM not found: %s\n", lm_name.c_str());
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
     AceLmParams p = g_lm_params;
@@ -569,7 +573,7 @@ static void lm_worker(std::shared_ptr<Job> job, AceRequest ace_req, int lm_batch
     AceLm * ctx = ace_lm_load(g_store, &p);
     if (!ctx) {
         fprintf(stderr, "[Server] FATAL: LM load failed\n");
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
 
@@ -581,7 +585,7 @@ static void lm_worker(std::shared_ptr<Job> job, AceRequest ace_req, int lm_batch
     ace_lm_free(ctx);
 
     if (rc != 0) {
-        job->status.store(job->cancel.load() ? 3 : 2);
+        job->status.store(job->cancel.load() ? JobStatus::CANCELLED : JobStatus::FAILED);
         return;
     }
 
@@ -605,7 +609,7 @@ static void lm_worker(std::shared_ptr<Job> job, AceRequest ace_req, int lm_batch
 
     job->result_body = std::move(body);
     job->result_mime = "application/json";
-    job->status.store(1);
+    job->status.store(JobStatus::DONE);
     fprintf(stderr, "[Server] Job %s done (LM, %d results)\n", job->id.c_str(), lm_batch_size);
 }
 
@@ -698,7 +702,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
     if (job->cancel.load()) {
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(3);
+        job->status.store(JobStatus::CANCELLED);
         return;
     }
 
@@ -709,14 +713,14 @@ static void synth_worker(std::shared_ptr<Job>    job,
         fprintf(stderr, "[Server] DiT not found: %s\n", dit_name.c_str());
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
     if (g_registry.text_enc.empty() || g_registry.vae.empty()) {
         fprintf(stderr, "[Server] Missing Text-Enc or VAE in registry\n");
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
     std::string        vae_name = resolve_name(g_registry.vae, ace_reqs[0].vae, g_loaded_vae);
@@ -725,7 +729,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
         fprintf(stderr, "[Server] VAE not found: %s\n", vae_name.c_str());
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
 
@@ -744,7 +748,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
             fprintf(stderr, "[Server] Adapter not found: %s\n", ace_reqs[0].adapter.c_str());
             free(src_interleaved);
             free(ref_interleaved);
-            job->status.store(2);
+            job->status.store(JobStatus::FAILED);
             return;
         }
         p.adapter_path  = adapter->path.c_str();
@@ -761,7 +765,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
         fprintf(stderr, "[Server] FATAL: synth load failed\n");
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
 
@@ -801,15 +805,14 @@ static void synth_worker(std::shared_ptr<Job>    job,
     // op (STRICT) or keeps them across ops (NEVER). The synth ctx is always
     // freed at the end of this handler. The runner ingests src and ref as
     // either audio or latents (latents win when both are set per side) and
-    // captures the cover latents that come out of phase 1 for the multipart
+    // captures one post-DiT latent per generated track for the multipart
     // response.
-    const float *      src_lat_ptr = src_latents.empty() ? nullptr : src_latents.data();
-    const float *      ref_lat_ptr = ref_latents.empty() ? nullptr : ref_latents.data();
-    std::vector<float> captured_latent;
-    int                captured_T_latent = 0;
+    const float *                   src_lat_ptr = src_latents.empty() ? nullptr : src_latents.data();
+    const float *                   ref_lat_ptr = ref_latents.empty() ? nullptr : ref_latents.data();
+    std::vector<std::vector<float>> captured_latents;
     const int rc = synth_batch_run(ctx, groups, src_interleaved, src_len, src_lat_ptr, src_T_latent, ref_interleaved,
-                                   ref_len, ref_lat_ptr, ref_T_latent, audio.data(), &captured_latent,
-                                   &captured_T_latent, server_cancel_job, (void *) &job->cancel);
+                                   ref_len, ref_lat_ptr, ref_T_latent, audio.data(), &captured_latents,
+                                   server_cancel_job, (void *) &job->cancel);
     ace_synth_free(ctx);
     free(src_interleaved);
     free(ref_interleaved);
@@ -818,7 +821,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
         for (auto & a : audio) {
             ace_audio_free(&a);
         }
-        job->status.store(job->cancel.load() ? 3 : 2);
+        job->status.store(job->cancel.load() ? JobStatus::CANCELLED : JobStatus::FAILED);
         return;
     }
 
@@ -865,13 +868,13 @@ static void synth_worker(std::shared_ptr<Job>    job,
     }
 
     // store result in job: every synth response is multipart, with one audio
-    // part per generated track plus the cover latent when the task produced
-    // one (text2music without source codes does not). The audio mime is
-    // per-part so the client knows wav vs mp3 without a query.
-    job->result_body = multipart_build_audio_latent(encoded, mime, captured_latent, captured_T_latent);
+    // part and one latent part per generated track, paired in wire order.
+    // The audio mime is per-part so the client knows wav vs mp3 without a
+    // query. The latent reproduces its track's audio when fed back to /vae.
+    job->result_body = multipart_build_audio_latent(encoded, mime, captured_latents);
     job->result_mime = MULTIPART_MIME;
 
-    job->status.store(job->cancel.load() ? 3 : 1);
+    job->status.store(job->cancel.load() ? JobStatus::CANCELLED : JobStatus::DONE);
     fprintf(stderr, "[Server] Job %s done (%d tracks)\n", job->id.c_str(), total_tracks);
 }
 
@@ -886,8 +889,10 @@ static void synth_worker(std::shared_ptr<Job>    job,
 //     part "ref_audio":   timbre reference audio (WAV or MP3), optional
 //     part "ref_latents": pre-encoded timbre latents (raw f32, [T*64]), wins over "ref_audio"
 // output: multipart/mixed
-//   one audio part per generated track (audio/mpeg or audio/wav per request output_format)
-//   one latent part (application/octet-stream, raw f32 [T*64]) when the task produced cover latents
+//   one audio part (audio/mpeg or audio/wav per request output_format) and
+//   one latent part (application/octet-stream, raw f32 [T*64]) per generated
+//   track, paired in wire order. The latent reproduces its track's audio when
+//   fed back to /vae decode.
 // Batch size = number of JSON objects (after synth_batch_size expansion, clamped to 9).
 // Metadata (seed, duration, etc) is already in the request JSON from /lm.
 static void handle_synth(const httplib::Request & req, httplib::Response & res) {
@@ -1055,7 +1060,7 @@ static void understand_worker(std::shared_ptr<Job> job,
                               int                  src_T_latent) {
     if (job->cancel.load()) {
         free(src_interleaved);
-        job->status.store(3);
+        job->status.store(JobStatus::CANCELLED);
         return;
     }
 
@@ -1070,7 +1075,7 @@ static void understand_worker(std::shared_ptr<Job> job,
         fprintf(stderr, "[Server] LM, DiT or VAE not found: lm=%s dit=%s vae=%s\n", lm_name.c_str(), dit_name.c_str(),
                 vae_name.c_str());
         free(src_interleaved);
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
 
@@ -1083,7 +1088,7 @@ static void understand_worker(std::shared_ptr<Job> job,
     if (!ctx) {
         fprintf(stderr, "[Server] FATAL: understand load failed\n");
         free(src_interleaved);
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
 
@@ -1097,7 +1102,7 @@ static void understand_worker(std::shared_ptr<Job> job,
     free(src_interleaved);
 
     if (rc != 0) {
-        job->status.store(job->cancel.load() ? 3 : 2);
+        job->status.store(job->cancel.load() ? JobStatus::CANCELLED : JobStatus::FAILED);
         return;
     }
 
@@ -1116,7 +1121,7 @@ static void understand_worker(std::shared_ptr<Job> job,
     std::string json_part = "[" + request_to_json(&out) + "]";
     job->result_body      = multipart_build_json_latent(json_part, captured_latent, captured_T_latent);
     job->result_mime      = MULTIPART_MIME;
-    job->status.store(1);
+    job->status.store(JobStatus::DONE);
     fprintf(stderr, "[Server] Job %s done (understand)\n", job->id.c_str());
 }
 
@@ -1230,7 +1235,7 @@ static void decode_worker(std::shared_ptr<Job> job,
                           WavFormat            wav_fmt,
                           int                  peak_clip) {
     if (job->cancel.load()) {
-        job->status.store(3);
+        job->status.store(JobStatus::CANCELLED);
         return;
     }
 
@@ -1238,7 +1243,7 @@ static void decode_worker(std::shared_ptr<Job> job,
     const ModelEntry * vae_entry = registry_find(g_registry.vae, vae_name.c_str());
     if (!vae_entry) {
         fprintf(stderr, "[Server] decode: VAE not found: %s\n", vae_name.c_str());
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
 
@@ -1251,7 +1256,7 @@ static void decode_worker(std::shared_ptr<Job> job,
     VAEGGML * vae = store_require_vae_dec(g_store, vae_key);
     if (!vae) {
         fprintf(stderr, "[Server] decode: store_require_vae_dec failed\n");
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
     ModelHandle vae_guard(g_store, vae);
@@ -1262,7 +1267,7 @@ static void decode_worker(std::shared_ptr<Job> job,
                                         g_synth_params.vae_chunk, g_synth_params.vae_overlap);
     if (T_audio < 0) {
         fprintf(stderr, "[Server] decode: vae_ggml_decode_tiled failed\n");
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
     fprintf(stderr, "[Server] decode: %d latent frames -> %d audio samples (%.2fs), %.0fms\n", src_T_latent, T_audio,
@@ -1293,7 +1298,7 @@ static void decode_worker(std::shared_ptr<Job> job,
     // client just uploaded it, echoing it back would only burn bandwidth.
     job->result_body = std::move(encoded);
     job->result_mime = mime;
-    job->status.store(job->cancel.load() ? 3 : 1);
+    job->status.store(job->cancel.load() ? JobStatus::CANCELLED : JobStatus::DONE);
     fprintf(stderr, "[Server] Job %s done (decode)\n", job->id.c_str());
 }
 
@@ -1314,7 +1319,7 @@ static void encode_worker(std::shared_ptr<Job> job, AceRequest ace_req, float * 
     } buf{ src_interleaved };
 
     if (job->cancel.load()) {
-        job->status.store(3);
+        job->status.store(JobStatus::CANCELLED);
         return;
     }
 
@@ -1322,7 +1327,7 @@ static void encode_worker(std::shared_ptr<Job> job, AceRequest ace_req, float * 
     const ModelEntry * vae_entry = registry_find(g_registry.vae, vae_name.c_str());
     if (!vae_entry) {
         fprintf(stderr, "[Server] encode: VAE not found: %s\n", vae_name.c_str());
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
 
@@ -1335,7 +1340,7 @@ static void encode_worker(std::shared_ptr<Job> job, AceRequest ace_req, float * 
     VAEEncoder * vae = store_require_vae_enc(g_store, vae_key);
     if (!vae) {
         fprintf(stderr, "[Server] encode: store_require_vae_enc failed\n");
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
     ModelHandle vae_guard(g_store, vae);
@@ -1352,7 +1357,7 @@ static void encode_worker(std::shared_ptr<Job> job, AceRequest ace_req, float * 
                                                        g_synth_params.vae_chunk, g_synth_params.vae_overlap);
     if (T_latent < 0) {
         fprintf(stderr, "[Server] encode: vae_enc_encode_tiled failed\n");
-        job->status.store(2);
+        job->status.store(JobStatus::FAILED);
         return;
     }
     fprintf(stderr, "[Server] encode: %d audio samples (%.2fs) -> %d latent frames, %.0fms\n", src_len,
@@ -1372,7 +1377,7 @@ static void encode_worker(std::shared_ptr<Job> job, AceRequest ace_req, float * 
     std::memcpy(body.data(), latent.data(), body.size());
     job->result_body = std::move(body);
     job->result_mime = "application/octet-stream";
-    job->status.store(job->cancel.load() ? 3 : 1);
+    job->status.store(job->cancel.load() ? JobStatus::CANCELLED : JobStatus::DONE);
     fprintf(stderr, "[Server] Job %s done (encode)\n", job->id.c_str());
 }
 
@@ -1793,7 +1798,7 @@ int main(int argc, char ** argv) {
         }
         // ?result=1: return result body
         if (req.has_param("result") && req.get_param_value("result") == "1") {
-            if (job->status.load() != 1) {
+            if (job->status.load() != JobStatus::DONE) {
                 json_error(res, 404, "Result not ready");
                 return;
             }
@@ -1818,9 +1823,16 @@ int main(int argc, char ** argv) {
         }
         // ?cancel=1: cancel the job
         if (req.has_param("cancel") && req.get_param_value("cancel") == "1") {
-            job->cancel.store(true);
-            fprintf(stderr, "[Server] Cancel requested for job %s\n", job->id.c_str());
-            res.set_content("{\"status\":\"cancelled\"}", "application/json");
+            JobStatus status = job->status.load();
+            if (status == JobStatus::RUNNING) {
+                job->cancel.store(true);
+                fprintf(stderr, "[Server] Cancel requested for job %s\n", job->id.c_str());
+                status = JobStatus::CANCELLED;
+            }
+            std::string body = "{\"status\":\"";
+            body += job_status_str(status);
+            body += "\"}";
+            res.set_content(body, "application/json");
             return;
         }
         json_error(res, 400, "Unknown action");

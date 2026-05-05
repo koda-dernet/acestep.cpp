@@ -79,9 +79,15 @@ export interface Song {
 	duration: number;
 	request: AceRequest;
 	audio: Blob;
-	// raw f32 [T*64] cover latents captured by the server alongside the audio.
-	// Optional: text2music without source codes does not produce them. When
+	// raw f32 [T*64] post-DiT latents that the VAE decoder produces this
+	// audio from. Always present for songs from /synth or /vae decode (the
+	// server emits them unconditionally). Absent only for songs imported
+	// from a raw audio file before Compute VAE latents has been run. When
 	// present, the client uploads them instead of audio on subsequent jobs
 	// that reuse this song as src or ref, skipping a VAE encode each time.
 	latents?: Blob;
+	// 4096 normalized peaks [0..1] cached after the first decode, so F5
+	// and re-mounts skip decodeAudioData entirely. Downsampled at draw
+	// time to whatever canvas width is on screen.
+	peaks?: Float32Array;
 }

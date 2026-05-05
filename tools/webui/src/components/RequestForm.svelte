@@ -228,7 +228,7 @@
 							duration: t.duration,
 							request: t.request,
 							audio: audios[i],
-							...(latents ? { latents } : {})
+							latents: latents[i]
 						};
 						await putSong(song);
 					}
@@ -339,7 +339,7 @@
 		const latentsBlob = new Blob([buf], { type: 'application/octet-stream' });
 		const name = file.name.replace(/\.vae$/i, '') || 'Imported';
 		try {
-			const jobId = await vaeDecode(latentsBlob, app.format);
+			const jobId = await vaeDecode(latentsBlob, app.request);
 			await pollJob(jobId);
 			const { audios } = await jobResultBlobs(jobId);
 			if (!audios.length) throw new Error('Decode returned no audio');
@@ -470,6 +470,10 @@
 			const variant = vm ? vm[1] : '';
 			const baseName = app.name || 'Untitled';
 
+			// submit job, poll until done, fetch result. When the source song
+			// or timbre reference already carries cached latents, we upload
+			// those instead of the audio: the server skips the matching VAE
+			// encode entirely.
 			const jobId =
 				srcSong || refSong
 					? await synthSubmitWithAudio(
@@ -512,7 +516,7 @@
 					duration: r.duration || 0,
 					request: r,
 					audio: audios[i],
-					...(latents ? { latents } : {})
+					latents: latents[i]
 				} as Song;
 				song.id = await putSong(song);
 				app.songs.unshift(song);
@@ -708,7 +712,19 @@
 	</div>
 
 	<TextFieldOutlined label="Name" bind:value={app.name} />
-	<AceTextFieldOutlinedMultiline label="Caption" bind:value={app.request.caption} />
+	<div class="lyrics-block">
+		<AceTextFieldOutlinedMultiline label="Caption" bind:value={app.request.caption} />
+		<div class="lyrics-toggle">
+			<Chip
+				variant="input"
+				selected={!app.request.use_cot_caption}
+				onclick={() => (app.request.use_cot_caption = !app.request.use_cot_caption)}
+				title="Lock caption: LM keeps your text intact (skips CoT caption refinement)"
+			>
+				Lock caption
+			</Chip>
+		</div>
+	</div>
 
 	<div class="lyrics-block">
 		<AceTextFieldOutlinedMultiline label="Lyrics" bind:value={app.request.lyrics} />
@@ -1057,6 +1073,47 @@
 		user-select: none;
 		@apply --m3-title-small;
 		color: var(--m3c-on-surface);
+	}
+
+	.section-title {
+		font-size: 0.85rem;
+		color: var(--m3c-on-surface);
+		font-weight: 600;
+		padding: 0.4rem 0 0;
+	}
+	.lyrics-header,
+	.caption-header,
+	.metadata-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.header-toggle {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 0.25rem;
+		font-size: 0.8rem;
+		font-weight: 400;
+		color: var(--m3c-on-surface-variant);
+		cursor: pointer;
+	}
+	.header-toggle input[type='checkbox'] {
+		cursor: pointer;
+	}
+	.has-clear {
+		position: relative;
+	}
+	.details-clear {
+		position: absolute;
+		top: 0.4rem;
+		right: 0;
+	}
+	.clear-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
 	}
 	.panel-header:hover {
 		background: oklch(from var(--m3c-on-surface) l c h / 0.08);

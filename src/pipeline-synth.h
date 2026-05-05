@@ -79,24 +79,20 @@ AceSynthJob * ace_synth_job_run_dit(AceSynth *         ctx,
                                     bool (*cancel)(void *) = nullptr,
                                     void * cancel_data     = nullptr);
 
-// Access the cover latents captured during Phase 1, regardless of how they
-// were obtained (VAE-encoded from src_audio or fed directly via src_latents).
-// Returns the [T_latent * 64] f32 buffer owned by the job, or NULL if the
-// task did not produce cover latents (e.g. text2music). T_latent is written
-// to *T_out when the pointer is non-NULL.
-const float * ace_synth_job_get_latents(const AceSynthJob * job, int * T_out);
+// Access the post-DiT denoised latent for one track of the job, owned by the
+// job and valid until ace_synth_job_free. Layout is flat [T_latent * 64] f32
+// time-major, identical to the /vae wire format: feeding it to /vae decode
+// reproduces the track's output audio. *T_out is set to T_latent.
+const float * ace_synth_job_get_latent(const AceSynthJob * job, int track_idx, int * T_out);
 
-// Phase 2: VAE decode and waveform splice. Acquires the VAE decoder and FSQ
-// detokenizer from the store; in STRICT this evicts the DiT from phase 1
-// transparently.
-// splice_src / splice_len: interleaved stereo source reused for repaint/lego wave splicing.
-//   Pass NULL when the job did not carry a source audio.
+// Phase 2: latent splice (for repaint/lego) + VAE decode. Acquires the VAE
+// decoder from the store; in STRICT this evicts the DiT from phase 1
+// transparently. The splice happens in latent space using s.cover_latents
+// captured during phase 1, no source audio is needed.
 // out[batch_n] allocated by caller, filled with audio buffers.
 // Returns 0 on success, -1 on error or cancellation.
 int ace_synth_job_run_vae(AceSynth *    ctx,
                           AceSynthJob * job,
-                          const float * splice_src,
-                          int           splice_len,
                           AceAudio *    out,
                           bool (*cancel)(void *) = nullptr,
                           void * cancel_data     = nullptr);
