@@ -11,3 +11,10 @@ adapters/*.safetensors
 __pycache__/
 node_modules/
 tools/webui/dist/
+
+# research artifacts
+/dump-*/
+/req*.json
+/cover_*.json
+/.merge-scratch/
+/acestep.cpp.code-workspace
