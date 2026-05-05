@@ -305,7 +305,7 @@
 
 			<div class="waveform-block">
 				<Waveform
-					audio={song.audio}
+					{song}
 					bind:playing
 					bind:time
 					bind:dur
