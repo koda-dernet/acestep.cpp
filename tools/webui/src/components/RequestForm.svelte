@@ -1075,46 +1075,6 @@
 		color: var(--m3c-on-surface);
 	}
 
-	.section-title {
-		font-size: 0.85rem;
-		color: var(--m3c-on-surface);
-		font-weight: 600;
-		padding: 0.4rem 0 0;
-	}
-	.lyrics-header,
-	.caption-header,
-	.metadata-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-	.header-toggle {
-		display: flex;
-		flex-direction: row;
-		align-items: center;
-		gap: 0.25rem;
-		font-size: 0.8rem;
-		font-weight: 400;
-		color: var(--m3c-on-surface-variant);
-		cursor: pointer;
-	}
-	.header-toggle input[type='checkbox'] {
-		cursor: pointer;
-	}
-	.has-clear {
-		position: relative;
-	}
-	.details-clear {
-		position: absolute;
-		top: 0.4rem;
-		right: 0;
-	}
-	.clear-btn {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		padding: 0;
-	}
 	.panel-header:hover {
 		background: oklch(from var(--m3c-on-surface) l c h / 0.08);
 	}
