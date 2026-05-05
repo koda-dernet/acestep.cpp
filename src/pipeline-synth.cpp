@@ -25,6 +25,7 @@ void ace_synth_default_params(AceSynthParams * p) {
     p->text_encoder_path = NULL;
     p->dit_path          = NULL;
     p->vae_path          = NULL;
+    p->pp_vae_path       = NULL;
     p->adapter_path      = NULL;
     p->adapter_scale     = 1.0f;
     p->adapter_scale_self  = 1.0f;
@@ -99,6 +100,16 @@ AceSynth * ace_synth_load(ModelStore * store, const AceSynthParams * params) {
 
     ctx->vae_dec_key.kind = MODEL_VAE_DEC;
     ctx->vae_dec_key.path = params->vae_path;
+
+    ctx->have_pp_vae = false;
+    if (params->pp_vae_path && params->pp_vae_path[0]) {
+        ctx->pp_vae_enc_key.kind = MODEL_VAE_ENC;
+        ctx->pp_vae_enc_key.path = params->pp_vae_path;
+        ctx->pp_vae_dec_key.kind = MODEL_VAE_DEC;
+        ctx->pp_vae_dec_key.path = params->pp_vae_path;
+        ctx->have_pp_vae         = true;
+        fprintf(stderr, "[Synth-Load] PP-VAE: %s\n", params->pp_vae_path);
+    }
 
     fprintf(stderr, "[Synth-Load] Ready: turbo=%s, fa=%s, batch_cfg=%s\n", ctx->meta->is_turbo ? "yes" : "no",
             params->use_fa ? "yes" : "no", params->use_batch_cfg ? "yes" : "no");
@@ -682,7 +693,14 @@ int ace_synth_job_run_vae(AceSynth *    ctx,
     if (!ctx || !job || !out) {
         return -1;
     }
-    return ops_vae_decode(ctx, job->batch_n, out, job->state, cancel, cancel_data);
+    int rc = ops_vae_decode(ctx, job->batch_n, out, job->state, cancel, cancel_data);
+    if (rc != 0) {
+        return rc;
+    }
+    if (ctx->have_pp_vae && job->state.rr.pp_vae_reencode) {
+        ops_pp_vae_reencode(ctx, job->batch_n, out, job->state);
+    }
+    return 0;
 }
 
 void ace_synth_job_free(AceSynthJob * job) {

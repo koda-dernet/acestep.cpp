@@ -47,6 +47,7 @@ void request_init(AceRequest * r) {
     r->repainting_end       = -1.0f;
     r->latent_shift         = 0.0f;
     r->latent_rescale       = 1.0f;
+    r->pp_vae_reencode      = false;
     r->custom_timesteps     = "";
     r->schedule_method      = SCHEDULE_LINEAR;
     r->task_type            = TASK_TEXT2MUSIC;
@@ -226,6 +227,14 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
         } else if (yyjson_is_str(v)) {
             const char * s     = yyjson_get_str(v);
             r->use_cot_caption = (strcmp(s, "true") == 0 || strcmp(s, "1") == 0);
+        }
+    }
+    if ((v = yyjson_obj_get(obj, "pp_vae_reencode"))) {
+        if (yyjson_is_bool(v)) {
+            r->pp_vae_reencode = yyjson_get_bool(v);
+        } else if (yyjson_is_str(v)) {
+            const char * s    = yyjson_get_str(v);
+            r->pp_vae_reencode = (strcmp(s, "true") == 0 || strcmp(s, "1") == 0);
         }
     }
 
@@ -447,6 +456,9 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     if (all || r->latent_rescale != def.latent_rescale) {
         yyjson_mut_obj_add_real(doc, root, "latent_rescale", r->latent_rescale);
     }
+    if (all || r->pp_vae_reencode != def.pp_vae_reencode) {
+        yyjson_mut_obj_add_bool(doc, root, "pp_vae_reencode", r->pp_vae_reencode);
+    }
     if (all || r->custom_timesteps != def.custom_timesteps) {
         yyjson_mut_obj_add_str(doc, root, "custom_timesteps", r->custom_timesteps.c_str());
     }
@@ -544,6 +556,9 @@ void request_dump(const AceRequest * r, FILE * f) {
     }
     if (r->latent_shift != 0.0f || r->latent_rescale != 1.0f) {
         fprintf(f, "[Request] latent post: shift=%.3f rescale=%.3f\n", r->latent_shift, r->latent_rescale);
+    }
+    if (r->pp_vae_reencode) {
+        fprintf(f, "[Request] pp_vae_reencode: true\n");
     }
     if (!r->custom_timesteps.empty()) {
         fprintf(f, "[Request] custom_timesteps: %s\n", r->custom_timesteps.c_str());

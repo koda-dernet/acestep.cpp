@@ -64,6 +64,7 @@ export const FIELDS: readonly FieldDef[] = [
 	{ key: 'infer_method', section: 'advanced', type: 'str' },
 	{ key: 'latent_shift', section: 'advanced', type: 'num' },
 	{ key: 'latent_rescale', section: 'advanced', type: 'num' },
+	{ key: 'pp_vae_reencode', section: 'advanced', type: 'bool' },
 	{ key: 'peak_clip', section: 'advanced', type: 'num' },
 	{ key: 'mp3_bitrate', section: 'advanced', type: 'num', min: 1 },
 

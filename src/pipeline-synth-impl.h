@@ -43,6 +43,10 @@ struct AceSynth {
     ModelKey dit_key;        // DiT, from dit_path (+ adapter_path, adapter_scale)
     ModelKey vae_enc_key;    // VAE encoder, from vae_path
     ModelKey vae_dec_key;    // VAE decoder, from vae_path
+
+    ModelKey pp_vae_enc_key;  // PP-VAE encoder, from pp_vae_path
+    ModelKey pp_vae_dec_key;  // PP-VAE decoder, from pp_vae_path
+    bool     have_pp_vae;     // true when pp_vae_path was set at load
 };
 
 // Transient state for a single job, shared by reference across the primitive

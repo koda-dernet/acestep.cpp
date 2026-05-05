@@ -31,6 +31,8 @@ export interface AceRequest {
 	repainting_end?: number;
 	latent_shift?: number;
 	latent_rescale?: number;
+	/** When true and server has a PP-VAE GGUF, run neural polish after main VAE decode. */
+	pp_vae_reencode?: boolean;
 	custom_timesteps?: string;
 	/** Timestep spacing: linear, cosine, ddim_uniform, power:p, composite:… (server defaults to linear). */
 	schedule_method?: string;
@@ -58,6 +60,7 @@ export interface AceProps {
 		embedding: string[];
 		dit: string[];
 		vae: string[];
+		'pp-vae'?: string[];
 	};
 	adapters: string[];
 	cli: Record<string, string | number>;

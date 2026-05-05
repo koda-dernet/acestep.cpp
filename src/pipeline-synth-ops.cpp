@@ -174,10 +174,6 @@ int ops_resolve_params(const AceSynth * ctx, const AceRequest * reqs, int batch_
     if (s.num_steps <= 0) {
         s.num_steps = ctx->meta->is_turbo ? 8 : 50;
     }
-    if (s.num_steps > 100) {
-        fprintf(stderr, "[Resolve-Params] WARNING: inference_steps %d clamped to 100\n", s.num_steps);
-        s.num_steps = 100;
-    }
 
     if (s.guidance_scale <= 0.0f) {
         s.guidance_scale = 1.0f;
@@ -1008,5 +1004,137 @@ int ops_vae_decode(const AceSynth * ctx,
             fprintf(stderr, "[WAV-Splice Batch%d] hard splice samples [%d, %d) / %d\n", b, start_s, end_s, T_clip);
         }
     }
+    return 0;
+}
+
+// ─── PP-VAE re-encode (post main VAE decode) ───────────────────────────────
+// Round-trip planar stereo PCM through a separate PP-VAE GGUF; RMS match.
+
+static void pp_vae_rms_planar(const float * samples, int n_samples_per_ch, float * rms_out, float * peak_out) {
+    double sum_sq = 0.0;
+    float  peak   = 0.0f;
+    int    total  = n_samples_per_ch * 2;
+    for (int i = 0; i < total; i++) {
+        float v = samples[i];
+        sum_sq += (double) v * v;
+        float av = fabsf(v);
+        if (av > peak) {
+            peak = av;
+        }
+    }
+    *rms_out  = (float) sqrt(sum_sq / (double) total);
+    *peak_out = peak;
+}
+
+int ops_pp_vae_reencode(const AceSynth * ctx, int batch_n, AceAudio * out, SynthState & s) {
+    (void) s;
+    if (!ctx->have_pp_vae) {
+        return 0;
+    }
+
+    s.timer.reset();
+    fprintf(stderr, "[PP-VAE] Re-encoding %d track(s)...\n", batch_n);
+
+    std::vector<float> in_rms(batch_n), in_peak(batch_n);
+    for (int b = 0; b < batch_n; b++) {
+        if (!out[b].samples || out[b].n_samples <= 0) {
+            continue;
+        }
+        pp_vae_rms_planar(out[b].samples, out[b].n_samples, &in_rms[b], &in_peak[b]);
+    }
+
+    std::vector<std::vector<float>> latents(batch_n);
+    std::vector<int>                T_latent(batch_n, 0);
+
+    {
+        VAEEncoder * enc = store_require_vae_enc(ctx->store, ctx->pp_vae_enc_key);
+        if (!enc) {
+            fprintf(stderr, "[PP-VAE] encoder unavailable, skipping\n");
+            return 0;
+        }
+        ModelHandle enc_guard(ctx->store, enc);
+
+        for (int b = 0; b < batch_n; b++) {
+            if (!out[b].samples || out[b].n_samples <= 0) {
+                continue;
+            }
+
+            int T_audio = out[b].n_samples;
+            int max_T   = (T_audio / 1920) + 64;
+            latents[b].resize((size_t) max_T * 64);
+
+            std::vector<float> interleaved((size_t) T_audio * 2);
+            const float *      L = out[b].samples;
+            const float *      R = out[b].samples + T_audio;
+            for (int i = 0; i < T_audio; i++) {
+                interleaved[(size_t) i * 2 + 0] = L[i];
+                interleaved[(size_t) i * 2 + 1] = R[i];
+            }
+
+            T_latent[b] = vae_enc_encode_tiled(enc, interleaved.data(), T_audio, latents[b].data(), max_T,
+                                               ctx->params.vae_chunk, ctx->params.vae_overlap);
+            if (T_latent[b] <= 0) {
+                fprintf(stderr, "[PP-VAE] batch %d: encode failed, skipping track\n", b);
+                T_latent[b] = 0;
+            }
+        }
+    }
+    fprintf(stderr, "[PP-VAE] encode: %.1f ms\n", s.timer.ms());
+
+    {
+        s.timer.reset();
+        VAEGGML * dec = store_require_vae_dec(ctx->store, ctx->pp_vae_dec_key);
+        if (!dec) {
+            fprintf(stderr, "[PP-VAE] decoder unavailable, skipping\n");
+            return 0;
+        }
+        ModelHandle dec_guard(ctx->store, dec);
+
+        for (int b = 0; b < batch_n; b++) {
+            if (T_latent[b] <= 0) {
+                continue;
+            }
+
+            int                T_audio_max = T_latent[b] * 1920;
+            std::vector<float> audio((size_t) 2 * T_audio_max);
+
+            int T_audio = vae_ggml_decode_tiled(dec, latents[b].data(), T_latent[b], audio.data(), T_audio_max,
+                                                ctx->params.vae_chunk, ctx->params.vae_overlap, nullptr, nullptr);
+            if (T_audio <= 0) {
+                fprintf(stderr, "[PP-VAE] batch %d: decode failed, skipping track\n", b);
+                continue;
+            }
+
+            float out_rms, out_peak;
+            pp_vae_rms_planar(audio.data(), T_audio, &out_rms, &out_peak);
+
+            float gain = 1.0f;
+            if (out_rms > 1e-8f) {
+                gain = in_rms[b] / out_rms;
+                if (out_peak * gain > in_peak[b] + 0.01f) {
+                    gain = in_peak[b] / (out_peak + 1e-8f);
+                }
+            }
+
+            int n_planar = 2 * T_audio;
+            for (int i = 0; i < n_planar; i++) {
+                audio[(size_t) i] *= gain;
+            }
+
+            free(out[b].samples);
+            out[b].samples = (float *) malloc((size_t) n_planar * sizeof(float));
+            if (!out[b].samples) {
+                fprintf(stderr, "[PP-VAE] batch %d: OOM\n", b);
+                out[b].n_samples = 0;
+                continue;
+            }
+            memcpy(out[b].samples, audio.data(), (size_t) n_planar * sizeof(float));
+            out[b].n_samples   = T_audio;
+            out[b].sample_rate = 48000;
+
+            fprintf(stderr, "[PP-VAE] batch %d: OK gain=%.3f\n", b, gain);
+        }
+    }
+    fprintf(stderr, "[PP-VAE] decode: %.1f ms\n", s.timer.ms());
     return 0;
 }

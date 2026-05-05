@@ -20,6 +20,7 @@ struct AceSynthParams {
     const char * text_encoder_path;  // Qwen3 text encoder GGUF (required)
     const char * dit_path;           // DiT GGUF (required)
     const char * vae_path;           // VAE GGUF (required)
+    const char * pp_vae_path;        // PP-VAE GGUF (NULL = disabled, same arch as main VAE)
     const char * adapter_path;       // adapter safetensors or directory (NULL to disable)
     float        adapter_scale;        // global user scale multiplier
     float        adapter_scale_self;   // self-attention multiplier

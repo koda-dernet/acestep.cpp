@@ -68,3 +68,6 @@ int ops_vae_decode(const AceSynth * ctx,
                    SynthState &     s,
                    bool (*cancel)(void *),
                    void * cancel_data);
+
+// Optional: encode→decode each track through PP-VAE for spectral cleanup (non-fatal if models missing).
+int ops_pp_vae_reencode(const AceSynth * ctx, int batch_n, AceAudio * out, SynthState & s);

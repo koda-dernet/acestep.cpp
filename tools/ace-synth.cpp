@@ -187,6 +187,7 @@ int main(int argc, char ** argv) {
     params.text_encoder_path = registry.text_enc[0].path.c_str();
     params.dit_path          = dit_entry->path.c_str();
     params.vae_path          = vae_entry->path.c_str();
+    params.pp_vae_path       = registry_pick_pp_vae_path(registry);
     params.adapter_path      = adapter_entry ? adapter_entry->path.c_str() : NULL;
     params.adapter_scale     = reqs[0].adapter_scale;
     params.adapter_scale_self  = reqs[0].adapter_scale_self;

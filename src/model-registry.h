@@ -2,7 +2,8 @@
 // model-registry.h: scan directories for GGUF models and adapters.
 //
 // Reads only GGUF headers (no weight data) to classify each file by its
-// general.architecture KV into lm/dit/text-enc/vae buckets.
+// general.architecture KV into lm/dit/text-enc/vae/pp-vae buckets.
+// PP-VAE: arch "pp-vae", or filename containing pp-vae / pp_vae (see registry_scan).
 // Adapter entries are .safetensors files or PEFT directories.
 //
 // Usage:
@@ -14,6 +15,7 @@
 #include "gguf.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -44,6 +46,7 @@ struct ModelRegistry {
     std::vector<ModelEntry>   dit;
     std::vector<ModelEntry>   text_enc;
     std::vector<ModelEntry>   vae;
+    std::vector<ModelEntry>   pp_vae;  // post-processing VAE (pp-vae GGUF arch), optional
     std::vector<AdapterEntry> adapters;
 };
 
@@ -96,7 +99,19 @@ static std::string registry_classify_gguf(const char * path) {
     if (arch == "acestep-vae") {
         return "VAE";
     }
+    if (arch == "pp-vae") {
+        return "PP-VAE";
+    }
     return "";
+}
+
+// True if basename suggests HOT-Step PP-VAE weights (arch may still say acestep-vae in some builds).
+static bool registry_fname_is_pp_vae(const std::string & fname) {
+    std::string lower = fname;
+    for (char & c : lower) {
+        c = (char) std::tolower((unsigned char) c);
+    }
+    return lower.find("pp-vae") != std::string::npos || lower.find("pp_vae") != std::string::npos;
 }
 
 // check if a string ends with a suffix
@@ -214,6 +229,12 @@ static bool registry_scan(ModelRegistry * reg, const char * models_dir) {
 
         std::string full = std::string(models_dir) + REGISTRY_SEP + fname;
         std::string type = registry_classify_gguf(full.c_str());
+        if (type == "VAE" && registry_fname_is_pp_vae(fname)) {
+            type = "PP-VAE";
+        }
+        if (type.empty() && registry_fname_is_pp_vae(fname)) {
+            type = "PP-VAE";
+        }
         if (type.empty()) {
             fprintf(stderr, "[Registry] WARNING: skipping %s (unknown architecture)\n", fname.c_str());
             continue;
@@ -228,6 +249,8 @@ static bool registry_scan(ModelRegistry * reg, const char * models_dir) {
             reg->text_enc.push_back(entry);
         } else if (type == "VAE") {
             reg->vae.push_back(entry);
+        } else if (type == "PP-VAE") {
+            reg->pp_vae.push_back(entry);
         }
 
         fprintf(stderr, "[Registry] %s -> %s\n", fname.c_str(), type.c_str());
@@ -235,6 +258,23 @@ static bool registry_scan(ModelRegistry * reg, const char * models_dir) {
     }
 
     return count > 0;
+}
+
+// Pick a PP-VAE GGUF path from the registry: prefer F32, then BF16, then F16
+// by filename substring; otherwise first entry. Returns NULL if none.
+static const char * registry_pick_pp_vae_path(const ModelRegistry & reg) {
+    if (reg.pp_vae.empty()) {
+        return nullptr;
+    }
+    const char * pref[] = { "F32", "BF16", "F16" };
+    for (const char * tag : pref) {
+        for (const auto & e : reg.pp_vae) {
+            if (e.name.find(tag) != std::string::npos) {
+                return e.path.c_str();
+            }
+        }
+    }
+    return reg.pp_vae[0].path.c_str();
 }
 
 // scan a directory for adapters.

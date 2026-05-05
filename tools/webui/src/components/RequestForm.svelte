@@ -76,6 +76,8 @@
 	let ditModels = $derived(app.props?.models.dit ?? []);
 	let lmModels = $derived(app.props?.models.lm ?? []);
 	let vaeModels = $derived(app.props?.models.vae ?? []);
+	let ppVaeModels = $derived(app.props?.models['pp-vae'] ?? []);
+	let ppVaeAvailable = $derived(ppVaeModels.length > 0);
 	let adapterList = $derived(app.props?.adapters ?? []);
 	let adapterStale = $derived(
 		!!app.request.adapter && !adapterList.includes(String(app.request.adapter))
@@ -113,6 +115,13 @@
 		if (app.request.adapter_scale_cross == null)
 			app.request.adapter_scale_cross = d.adapter_scale_cross;
 		if (app.request.adapter_scale_mlp == null) app.request.adapter_scale_mlp = d.adapter_scale_mlp;
+	});
+
+	// PP-VAE polish: cannot stay on if server reports no PP-VAE files.
+	$effect(() => {
+		if (!ppVaeAvailable && app.request.pp_vae_reencode) {
+			app.request.pp_vae_reencode = false;
+		}
 	});
 
 	// DiT input indicators
@@ -435,6 +444,10 @@
 	// synth params come from the form (global), not per-pending.
 	// server expands synth_batch_size internally; we predict the same expansion for SongCards.
 	async function synthesize() {
+		if (app.request.pp_vae_reencode && !ppVaeAvailable) {
+			toast('Polish needs a PP-VAE GGUF in the server models folder (reload the page after adding it).');
+			return;
+		}
 		busySynth = true;
 		try {
 			savePending();
@@ -446,6 +459,9 @@
 			const hasSeed = userSeed != null && userSeed >= 0;
 
 			const synthParams = pickSections(app.request, ['flow', 'advanced', 'toolbar', 'routing']);
+			if (!ppVaeAvailable) {
+				delete synthParams.pp_vae_reencode;
+			}
 			delete synthParams.seed;
 			delete synthParams.synth_batch_size;
 			if (synthParams.adapter && !adapterList.includes(String(synthParams.adapter)))
@@ -916,27 +932,42 @@
 		{/if}
 	</div>
 
-	<div class="inline-row">
-		<div class="batch-field">
-			<NumericTextFieldOutlined label="Batch" bind:value={app.request.synth_batch_size} />
+	<div class="synth-output-bar">
+		<div class="synth-output-numerics">
+			<div class="batch-field">
+				<NumericTextFieldOutlined label="Batch" bind:value={app.request.synth_batch_size} />
+			</div>
+			<div class="batch-field peak-clip-field">
+				<NumericTextFieldOutlined label="Peak clip" bind:value={app.request.peak_clip} />
+			</div>
 		</div>
-		<div class="batch-field peak-clip-field">
-			<NumericTextFieldOutlined label="Peak clip" bind:value={app.request.peak_clip} />
+		<div class="synth-output-chips output-tonal-chips">
+			<Chip
+				variant="input"
+				disabled={!ppVaeAvailable}
+				selected={ppVaeAvailable && app.request.pp_vae_reencode === true}
+				title={ppVaeAvailable
+					? 'PP-VAE: neural polish pass after decode (slower)'
+					: 'No PP-VAE in server models — add pp-vae*.gguf to the models directory and refresh'}
+				onclick={() => {
+					if (!ppVaeAvailable) return;
+					app.request.pp_vae_reencode = !app.request.pp_vae_reencode;
+				}}
+				>Polish</Chip
+			>
+			<Chip variant="input" selected={app.format === 'mp3'} onclick={() => (app.format = 'mp3')}
+				>MP3</Chip
+			>
+			<Chip variant="input" selected={app.format === 'wav16'} onclick={() => (app.format = 'wav16')}
+				>WAV16</Chip
+			>
+			<Chip variant="input" selected={app.format === 'wav24'} onclick={() => (app.format = 'wav24')}
+				>WAV24</Chip
+			>
+			<Chip variant="input" selected={app.format === 'wav32'} onclick={() => (app.format = 'wav32')}
+				>WAV32</Chip
+			>
 		</div>
-		<div class="spacer"></div>
-		<span class="inline-label">Format</span>
-		<Chip variant="input" selected={app.format === 'mp3'} onclick={() => (app.format = 'mp3')}
-			>MP3</Chip
-		>
-		<Chip variant="input" selected={app.format === 'wav16'} onclick={() => (app.format = 'wav16')}
-			>WAV16</Chip
-		>
-		<Chip variant="input" selected={app.format === 'wav24'} onclick={() => (app.format = 'wav24')}
-			>WAV24</Chip
-		>
-		<Chip variant="input" selected={app.format === 'wav32'} onclick={() => (app.format = 'wav32')}
-			>WAV32</Chip
-		>
 	</div>
 
 	<div class="chip-row">
@@ -1161,11 +1192,62 @@
 		gap: 1rem;
 	}
 
-	/* Inline row for batch/pending/format */
+	/* Inline row (pending nav, etc.) */
 	.inline-row {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.5rem;
+	}
+
+	/* One bar: numerics (Batch / Peak) + format + Polish; bottoms align to outlined fields */
+	.synth-output-bar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		gap: 0.65rem 0.85rem;
+		width: 100%;
+		box-sizing: border-box;
+		padding: 0.35rem 0 0.15rem;
+	}
+	.synth-output-numerics {
+		display: flex;
+		flex-wrap: nowrap;
+		align-items: flex-end;
+		gap: 0.5rem;
+		flex: 0 0 auto;
+	}
+	.synth-output-chips {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.45rem;
+		flex: 1 1 220px;
+		min-width: 0;
+		padding: 0.1rem 0 0.15rem 0.85rem;
+		margin: 0;
+		border-left: 1px solid color-mix(in srgb, var(--m3c-outline) 45%, transparent);
+		box-sizing: border-box;
+	}
+	/* Breathing room between Polish and format chips */
+	.synth-output-chips.output-tonal-chips :global(button.m3-container.input:first-of-type) {
+		margin-right: 0.35rem;
+	}
+
+	/* Format + Polish chips: same outlined “tonal” look (overrides brand-green input chips) */
+	.form.ace-neutral-fields .output-tonal-chips :global(button.m3-container.input) {
+		--m3c-secondary: var(--m3c-outline);
+		--m3c-secondary-container: color-mix(in srgb, var(--m3c-on-surface) 8%, var(--m3c-surface));
+		--m3c-on-secondary-container: var(--m3c-on-surface);
+		flex-shrink: 0;
+		background-color: var(--m3c-surface) !important;
+		border: 1px solid var(--m3c-outline) !important;
+		color: var(--m3c-on-surface-variant) !important;
+	}
+	.form.ace-neutral-fields .output-tonal-chips :global(button.m3-container.input.selected) {
+		border-color: color-mix(in srgb, var(--m3c-on-surface) 45%, var(--m3c-outline)) !important;
+		background-color: color-mix(in srgb, var(--m3c-on-surface) 12%, var(--m3c-surface)) !important;
+		color: var(--m3c-on-surface) !important;
 	}
 	.inline-label {
 		@apply --m3-label-large;

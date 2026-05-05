@@ -737,6 +737,7 @@ static void synth_worker(std::shared_ptr<Job>    job,
     p.text_encoder_path = g_registry.text_enc[0].path.c_str();
     p.dit_path          = dit->path.c_str();
     p.vae_path          = vae->path.c_str();
+    p.pp_vae_path       = registry_pick_pp_vae_path(g_registry);
     p.adapter_path      = nullptr;
     p.adapter_scale     = 1.0f;
     p.adapter_scale_self  = 1.0f;
@@ -1528,6 +1529,7 @@ static void handle_props(const httplib::Request &, httplib::Response & res) {
     add_names(models, "embedding", g_registry.text_enc);
     add_names(models, "dit", g_registry.dit);
     add_names(models, "vae", g_registry.vae);
+    add_names(models, "pp-vae", g_registry.pp_vae);
 
     // adapters: available adapter names
     yyjson_mut_val * adapters_arr = yyjson_mut_arr(doc);
@@ -1864,8 +1866,9 @@ int main(int argc, char ** argv) {
     fprintf(stderr, "[Server] Listening on %s:%d\n", host, port);
     fprintf(stderr, "[Server] Pipelines:%s%s%s\n", have_lm ? " /lm" : "", have_synth ? " /synth" : "",
             have_understand ? " /understand" : "");
-    fprintf(stderr, "[Server] Models: %zu LM, %zu Text-Enc, %zu DiT, %zu VAE, %zu Adapter\n", g_registry.lm.size(),
-            g_registry.text_enc.size(), g_registry.dit.size(), g_registry.vae.size(), g_registry.adapters.size());
+    fprintf(stderr, "[Server] Models: %zu LM, %zu Text-Enc, %zu DiT, %zu VAE, %zu PP-VAE, %zu Adapter\n",
+            g_registry.lm.size(), g_registry.text_enc.size(), g_registry.dit.size(), g_registry.vae.size(),
+            g_registry.pp_vae.size(), g_registry.adapters.size());
     if (!svr.listen(host, port)) {
         fprintf(stderr, "[Server] FATAL: cannot bind %s:%d\n", host, port);
     }
