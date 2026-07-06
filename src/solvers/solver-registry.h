@@ -13,8 +13,10 @@
 #include "solver-dopri.h"
 #include "solver-jkass.h"
 #include "solver-stork.h"
+#include "solver-storm.h"
 #include "solver-sde.h"
 #include "solver-gl2s.h"
+#include "solver-custom.h"
 
 #include <cstring>
 
@@ -27,6 +29,7 @@ struct SolverInfo {
     bool          needs_model_fn; // true if solver calls model_fn for extra evaluations
     bool          is_stateful;    // true if solver maintains velocity history
     bool          is_stochastic;  // true if solver uses random noise per step
+    bool          solve_final_step = false; // true to integrate final interval to t=0
 };
 
 // All registered solvers — update this array when adding new solvers.
@@ -39,6 +42,7 @@ static const SolverInfo SOLVER_REGISTRY[] = {
     {"jkass_fast",  "JKASS Fast",         solver_jkass_fast_step,     1,  1, false, true,  false},
     {"stork2",      "STORK 2",            solver_stork2_step,         1,  2, false, true,  false},
     {"stork4",      "STORK 4",            solver_stork4_step,         1,  4, false, true,  false},
+    {"storm",       "STORM Hybrid",       solver_storm_step,          0,  5, true,  true,  false},
     {"sde",         "SDE (Stochastic)",   solver_sde_step,            1,  1, false, false, true },
 
     // ── Multi Evaluation ──
@@ -49,6 +53,18 @@ static const SolverInfo SOLVER_REGISTRY[] = {
     {"dopri5",         "DOPRI5 (7+ NFE)",       solver_dopri5_step,         0,  5, true,  false, false},
     {"dop853",         "DOP853 (13 NFE)",       solver_dop853_step,        13,  8, true,  false, false},
     {"gl2s",           "Gauss-Legendre 2s (6 NFE)", solver_gl2s_step,       6,  4, true,  false, false},
+
+    // Experimental local solvers for artifact probing.
+    {"midpoint",          "Midpoint RK2 (2 NFE)",       solver_midpoint_step,          2, 2, true,  false, false},
+    {"ralston",           "Ralston RK2 (2 NFE)",        solver_ralston_step,           2, 2, true,  false, false},
+    {"dopri5_late_euler", "DOPRI5 -> Euler late",       solver_dopri5_late_euler_step, 0, 3, true,  false, false},
+    {"gl2s_late_euler",   "GL2S -> Euler late",         solver_gl2s_late_euler_step,   6, 3, true,  false, false},
+    {"dopri5_cap",        "DOPRI5 capped correction",   solver_dopri5_cap_step,        0, 4, true,  false, false},
+    {"gl2s_cap",          "GL2S capped correction",     solver_gl2s_cap_step,          6, 4, true,  false, false},
+    {"dopri5_final",      "DOPRI5 final-aware",         solver_dopri5_step,            0, 5, true,  false, false, true},
+    {"gl2s_final",        "GL2S final-aware",           solver_gl2s_step,              6, 4, true,  false, false, true},
+    {"dopri5_cap_final",  "DOPRI5 capped final-aware",  solver_dopri5_cap_step,        0, 4, true,  false, false, true},
+    {"gl2s_cap_final",    "GL2S capped final-aware",    solver_gl2s_cap_step,          6, 4, true,  false, false, true},
 };
 
 static const int SOLVER_REGISTRY_SIZE = (int) (sizeof(SOLVER_REGISTRY) / sizeof(SOLVER_REGISTRY[0]));

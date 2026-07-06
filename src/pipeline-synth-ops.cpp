@@ -50,6 +50,58 @@ template <typename T> static std::vector<T> parse_csv(const std::string & s) {
     return out;
 }
 
+static std::string effective_solver_name(const AceRequest & r) {
+    if (!r.solver.empty()) {
+        return r.solver;
+    }
+    return legacy_infer_to_solver(r.infer_method);
+}
+
+static std::string storm_rk_order_to_string(const std::string & raw) {
+    if (raw.empty() || raw == "auto") {
+        return "auto";
+    }
+    int          order = 0;
+    const char * first = raw.data();
+    const char * last  = first + raw.size();
+    auto         parsed = std::from_chars(first, last, order);
+    if (parsed.ec != std::errc{}) {
+        return "auto";
+    }
+    if (order < 1) return "auto";
+    if (order > 5) return "5";
+    return std::to_string(order);
+}
+
+static StormConfig storm_config_from_request(const AceRequest & r) {
+    StormConfig cfg;
+    cfg.stiffness_threshold = r.storm_stiffness_threshold;
+    cfg.hysteresis_margin   = r.storm_hysteresis_margin;
+    cfg.ema_alpha           = r.storm_ema_alpha;
+    cfg.cache_depth         = r.storm_cache_depth;
+    cfg.rk_order            = storm_rk_order_to_string(r.storm_rk_order);
+    cfg.calib_frac          = r.storm_calib_frac;
+    cfg.adaptive_sub_step   = r.storm_adaptive_sub_step;
+    cfg.sub_step_threshold  = r.storm_sub_step_threshold;
+    cfg.sub_step_max_depth  = r.storm_sub_step_max_depth;
+    cfg.look_back_enabled   = r.storm_look_back_enabled;
+    cfg.look_back_lambda    = r.storm_look_back_lambda;
+    cfg.look_back_snr_power = r.storm_look_back_snr_power;
+    cfg.enable_restarts     = r.storm_enable_restarts;
+    std::vector<int> steps  = parse_csv<int>(r.storm_restart_steps);
+    for (int step : steps) {
+        if (step >= 0) cfg.restart_steps.insert(step);
+    }
+    cfg.restart_noise_scale = r.storm_restart_noise_scale;
+    cfg.restart_s_noise     = r.storm_restart_s_noise;
+    cfg.restart_seed        = (int) r.storm_restart_seed;
+    cfg.restart_flush_cache = r.storm_restart_flush_cache;
+    cfg.restart_aligned_noise = r.storm_restart_aligned_noise;
+    cfg.force_pure_euler    = r.storm_force_pure_euler;
+    cfg.verbose             = r.storm_verbose;
+    return cfg;
+}
+
 int ops_encode_src(const AceSynth * ctx,
                    const float *    src_audio,
                    int              src_len,
@@ -807,7 +859,7 @@ void ops_init_noise(const AceSynth * ctx, const AceRequest * reqs, int batch_n, 
         s.seeds[b]  = reqs[b].seed;
         philox_randn(reqs[b].seed, dst, s.Oc * s.T, /*bf16_round=*/true);
         fprintf(stderr, "[Init-Noise Batch%d] Philox noise seed=%lld, [%d, %d]%s\n", b, (long long) reqs[b].seed, s.T,
-                s.Oc, (s.rr.infer_method == INFER_SDE) ? " (SDE)" : "");
+                s.Oc, (effective_solver_name(s.rr) == SOLVER_SDE) ? " (SDE)" : "");
     }
 
     // cover_noise_strength: blend initial noise with clean source latents.
@@ -883,14 +935,16 @@ int ops_dit_generate(const AceSynth * ctx, int batch_n, SynthState & s, bool (*c
     }
 
     s.timer.reset();
+    std::string solver_name = effective_solver_name(s.rr);
+    StormConfig storm_config = storm_config_from_request(s.rr);
+
     int dit_rc = dit_ggml_generate(
         dit, s.noise.data(), s.context.data(), s.enc_hidden.data(), s.enc_S, s.T, batch_n, s.num_steps,
         s.schedule.data(), s.output.data(), s.guidance_scale, &s.dbg,
         s.context_silence.empty() ? nullptr : s.context_silence.data(), s.cover_steps, cancel, cancel_data,
         s.per_S.data(), s.per_enc_S.data(), s.enc_hidden_nc.empty() ? nullptr : s.enc_hidden_nc.data(),
         s.per_enc_S_nc_final.empty() ? nullptr : s.per_enc_S_nc_final.data(),
-        (s.rr.infer_method.empty() || s.rr.infer_method == INFER_ODE) ? "euler" : s.rr.infer_method.c_str(),
-        s.seeds.data(),
+        solver_name.c_str(), s.rr.stork_substeps, &storm_config, s.seeds.data(),
         ctx->params.use_batch_cfg, s.rr.dcw_scaler, s.rr.dcw_high_scaler, s.rr.dcw_mode.c_str());
     if (dit_rc != 0) {
         return -1;

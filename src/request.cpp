@@ -50,6 +50,29 @@ void request_init(AceRequest * r) {
     r->pp_vae_reencode      = false;
     r->custom_timesteps     = "";
     r->schedule_method      = SCHEDULE_LINEAR;
+    r->solver               = SOLVER_EULER;
+    r->stork_substeps       = STORK_SUBSTEPS_DEFAULT;
+    r->storm_stiffness_threshold = 0.15f;
+    r->storm_hysteresis_margin   = 0.05f;
+    r->storm_ema_alpha           = 0.30f;
+    r->storm_cache_depth         = 5;
+    r->storm_rk_order            = "auto";
+    r->storm_calib_frac          = 0.12f;
+    r->storm_adaptive_sub_step   = true;
+    r->storm_sub_step_threshold  = 0.0f;
+    r->storm_sub_step_max_depth  = 2;
+    r->storm_look_back_enabled   = true;
+    r->storm_look_back_lambda    = 0.35f;
+    r->storm_look_back_snr_power = 1.5f;
+    r->storm_enable_restarts     = false;
+    r->storm_restart_steps       = "";
+    r->storm_restart_noise_scale = 0.5f;
+    r->storm_restart_s_noise     = 1.0f;
+    r->storm_restart_seed        = 42;
+    r->storm_restart_flush_cache = true;
+    r->storm_restart_aligned_noise = true;
+    r->storm_force_pure_euler    = false;
+    r->storm_verbose             = false;
     r->task_type            = TASK_TEXT2MUSIC;
     r->track                = "";
     r->infer_method         = INFER_ODE;
@@ -72,9 +95,27 @@ static inline std::string yy_str(yyjson_val * v) {
     return std::string(yyjson_get_str(v), yyjson_get_len(v));
 }
 
+static inline bool yy_bool_value(yyjson_val * v, bool def) {
+    if (yyjson_is_bool(v)) {
+        return yyjson_get_bool(v);
+    }
+    if (yyjson_is_str(v)) {
+        const char * s = yyjson_get_str(v);
+        if (strcmp(s, "true") == 0 || strcmp(s, "1") == 0 || strcmp(s, "yes") == 0 || strcmp(s, "on") == 0) {
+            return true;
+        }
+        if (strcmp(s, "false") == 0 || strcmp(s, "0") == 0 || strcmp(s, "no") == 0 || strcmp(s, "off") == 0) {
+            return false;
+        }
+    }
+    return def;
+}
+
 // populate AceRequest fields from a yyjson object (must be pre-initialized)
 static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     yyjson_val * v;
+    bool saw_solver = false;
+    bool saw_infer_method = false;
 
     // strings
     if ((v = yyjson_obj_get(obj, "caption")) && yyjson_is_str(v)) {
@@ -104,14 +145,25 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     if ((v = yyjson_obj_get(obj, "track")) && yyjson_is_str(v)) {
         r->track = yy_str(v);
     }
+    if ((v = yyjson_obj_get(obj, "solver")) && yyjson_is_str(v) && yyjson_get_len(v) > 0) {
+        r->solver = yy_str(v);
+        saw_solver = true;
+    }
     if ((v = yyjson_obj_get(obj, "infer_method")) && yyjson_is_str(v) && yyjson_get_len(v) > 0) {
         r->infer_method = yy_str(v);
+        saw_infer_method = true;
     }
     if ((v = yyjson_obj_get(obj, "custom_timesteps")) && yyjson_is_str(v)) {
         r->custom_timesteps = yy_str(v);
     }
     if ((v = yyjson_obj_get(obj, "schedule_method")) && yyjson_is_str(v)) {
         r->schedule_method = yy_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_rk_order")) && yyjson_is_str(v) && yyjson_get_len(v) > 0) {
+        r->storm_rk_order = yy_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_restart_steps")) && yyjson_is_str(v)) {
+        r->storm_restart_steps = yy_str(v);
     }
     if ((v = yyjson_obj_get(obj, "lm_mode")) && yyjson_is_str(v) && yyjson_get_len(v) > 0) {
         r->lm_mode = yy_str(v);
@@ -154,6 +206,18 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     if ((v = yyjson_obj_get(obj, "inference_steps")) && yyjson_is_num(v)) {
         r->inference_steps = (int) yyjson_get_num(v);
     }
+    if ((v = yyjson_obj_get(obj, "stork_substeps")) && yyjson_is_num(v)) {
+        r->stork_substeps = (int) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_cache_depth")) && yyjson_is_num(v)) {
+        r->storm_cache_depth = (int) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_sub_step_max_depth")) && yyjson_is_num(v)) {
+        r->storm_sub_step_max_depth = (int) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_restart_seed")) && yyjson_is_num(v)) {
+        r->storm_restart_seed = (int64_t) yyjson_get_num(v);
+    }
 
     // floats
     if ((v = yyjson_obj_get(obj, "duration")) && yyjson_is_num(v)) {
@@ -182,6 +246,33 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
     }
     if ((v = yyjson_obj_get(obj, "dcw_mode")) && yyjson_is_str(v)) {
         r->dcw_mode = yyjson_get_str(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_stiffness_threshold")) && yyjson_is_num(v)) {
+        r->storm_stiffness_threshold = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_hysteresis_margin")) && yyjson_is_num(v)) {
+        r->storm_hysteresis_margin = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_ema_alpha")) && yyjson_is_num(v)) {
+        r->storm_ema_alpha = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_calib_frac")) && yyjson_is_num(v)) {
+        r->storm_calib_frac = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_sub_step_threshold")) && yyjson_is_num(v)) {
+        r->storm_sub_step_threshold = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_look_back_lambda")) && yyjson_is_num(v)) {
+        r->storm_look_back_lambda = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_look_back_snr_power")) && yyjson_is_num(v)) {
+        r->storm_look_back_snr_power = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_restart_noise_scale")) && yyjson_is_num(v)) {
+        r->storm_restart_noise_scale = (float) yyjson_get_num(v);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_restart_s_noise")) && yyjson_is_num(v)) {
+        r->storm_restart_s_noise = (float) yyjson_get_num(v);
     }
     if ((v = yyjson_obj_get(obj, "audio_cover_strength")) && yyjson_is_num(v)) {
         r->audio_cover_strength = (float) yyjson_get_num(v);
@@ -236,6 +327,31 @@ static void request_parse_obj(yyjson_val * obj, AceRequest * r) {
             const char * s    = yyjson_get_str(v);
             r->pp_vae_reencode = (strcmp(s, "true") == 0 || strcmp(s, "1") == 0);
         }
+    }
+    if ((v = yyjson_obj_get(obj, "storm_adaptive_sub_step"))) {
+        r->storm_adaptive_sub_step = yy_bool_value(v, r->storm_adaptive_sub_step);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_look_back_enabled"))) {
+        r->storm_look_back_enabled = yy_bool_value(v, r->storm_look_back_enabled);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_enable_restarts"))) {
+        r->storm_enable_restarts = yy_bool_value(v, r->storm_enable_restarts);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_restart_flush_cache"))) {
+        r->storm_restart_flush_cache = yy_bool_value(v, r->storm_restart_flush_cache);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_restart_aligned_noise"))) {
+        r->storm_restart_aligned_noise = yy_bool_value(v, r->storm_restart_aligned_noise);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_force_pure_euler"))) {
+        r->storm_force_pure_euler = yy_bool_value(v, r->storm_force_pure_euler);
+    }
+    if ((v = yyjson_obj_get(obj, "storm_verbose"))) {
+        r->storm_verbose = yy_bool_value(v, r->storm_verbose);
+    }
+
+    if (!saw_solver && saw_infer_method) {
+        r->solver = legacy_infer_to_solver(r->infer_method);
     }
 
     // Lyrics is the source of truth for instrumental mode.
@@ -424,7 +540,75 @@ static yyjson_mut_doc * request_build_doc(const AceRequest * r, bool sparse) {
     if (all || r->dcw_mode != def.dcw_mode) {
         yyjson_mut_obj_add_str(doc, root, "dcw_mode", r->dcw_mode.c_str());
     }
-    // infer_method / schedule_method: always emitted (explicit round trip).
+    // solver / schedule_method: always emitted (explicit round trip).
+    yyjson_mut_obj_add_str(doc, root, "solver", r->solver.c_str());
+    if (all || r->stork_substeps != def.stork_substeps) {
+        yyjson_mut_obj_add_int(doc, root, "stork_substeps", r->stork_substeps);
+    }
+    if (all || r->storm_stiffness_threshold != def.storm_stiffness_threshold) {
+        yyjson_mut_obj_add_real(doc, root, "storm_stiffness_threshold", r->storm_stiffness_threshold);
+    }
+    if (all || r->storm_hysteresis_margin != def.storm_hysteresis_margin) {
+        yyjson_mut_obj_add_real(doc, root, "storm_hysteresis_margin", r->storm_hysteresis_margin);
+    }
+    if (all || r->storm_ema_alpha != def.storm_ema_alpha) {
+        yyjson_mut_obj_add_real(doc, root, "storm_ema_alpha", r->storm_ema_alpha);
+    }
+    if (all || r->storm_cache_depth != def.storm_cache_depth) {
+        yyjson_mut_obj_add_int(doc, root, "storm_cache_depth", r->storm_cache_depth);
+    }
+    if (all || r->storm_rk_order != def.storm_rk_order) {
+        yyjson_mut_obj_add_str(doc, root, "storm_rk_order", r->storm_rk_order.c_str());
+    }
+    if (all || r->storm_calib_frac != def.storm_calib_frac) {
+        yyjson_mut_obj_add_real(doc, root, "storm_calib_frac", r->storm_calib_frac);
+    }
+    if (all || r->storm_adaptive_sub_step != def.storm_adaptive_sub_step) {
+        yyjson_mut_obj_add_bool(doc, root, "storm_adaptive_sub_step", r->storm_adaptive_sub_step);
+    }
+    if (all || r->storm_sub_step_threshold != def.storm_sub_step_threshold) {
+        yyjson_mut_obj_add_real(doc, root, "storm_sub_step_threshold", r->storm_sub_step_threshold);
+    }
+    if (all || r->storm_sub_step_max_depth != def.storm_sub_step_max_depth) {
+        yyjson_mut_obj_add_int(doc, root, "storm_sub_step_max_depth", r->storm_sub_step_max_depth);
+    }
+    if (all || r->storm_look_back_enabled != def.storm_look_back_enabled) {
+        yyjson_mut_obj_add_bool(doc, root, "storm_look_back_enabled", r->storm_look_back_enabled);
+    }
+    if (all || r->storm_look_back_lambda != def.storm_look_back_lambda) {
+        yyjson_mut_obj_add_real(doc, root, "storm_look_back_lambda", r->storm_look_back_lambda);
+    }
+    if (all || r->storm_look_back_snr_power != def.storm_look_back_snr_power) {
+        yyjson_mut_obj_add_real(doc, root, "storm_look_back_snr_power", r->storm_look_back_snr_power);
+    }
+    if (all || r->storm_enable_restarts != def.storm_enable_restarts) {
+        yyjson_mut_obj_add_bool(doc, root, "storm_enable_restarts", r->storm_enable_restarts);
+    }
+    if (all || r->storm_restart_steps != def.storm_restart_steps) {
+        yyjson_mut_obj_add_str(doc, root, "storm_restart_steps", r->storm_restart_steps.c_str());
+    }
+    if (all || r->storm_restart_noise_scale != def.storm_restart_noise_scale) {
+        yyjson_mut_obj_add_real(doc, root, "storm_restart_noise_scale", r->storm_restart_noise_scale);
+    }
+    if (all || r->storm_restart_s_noise != def.storm_restart_s_noise) {
+        yyjson_mut_obj_add_real(doc, root, "storm_restart_s_noise", r->storm_restart_s_noise);
+    }
+    if (all || r->storm_restart_seed != def.storm_restart_seed) {
+        yyjson_mut_obj_add_sint(doc, root, "storm_restart_seed", r->storm_restart_seed);
+    }
+    if (all || r->storm_restart_flush_cache != def.storm_restart_flush_cache) {
+        yyjson_mut_obj_add_bool(doc, root, "storm_restart_flush_cache", r->storm_restart_flush_cache);
+    }
+    if (all || r->storm_restart_aligned_noise != def.storm_restart_aligned_noise) {
+        yyjson_mut_obj_add_bool(doc, root, "storm_restart_aligned_noise", r->storm_restart_aligned_noise);
+    }
+    if (all || r->storm_force_pure_euler != def.storm_force_pure_euler) {
+        yyjson_mut_obj_add_bool(doc, root, "storm_force_pure_euler", r->storm_force_pure_euler);
+    }
+    if (all || r->storm_verbose != def.storm_verbose) {
+        yyjson_mut_obj_add_bool(doc, root, "storm_verbose", r->storm_verbose);
+    }
+    // infer_method remains an explicit legacy round-trip field.
     yyjson_mut_obj_add_str(doc, root, "infer_method", r->infer_method.c_str());
     yyjson_mut_obj_add_str(doc, root, "schedule_method", r->schedule_method.c_str());
     // lm_mode and output_format follow the same rule: enumerations with a
@@ -567,7 +751,20 @@ void request_dump(const AceRequest * r, FILE * f) {
     if (!r->track.empty()) {
         fprintf(f, "[Request] track: %s\n", r->track.c_str());
     }
-    fprintf(f, "[Request] infer_method: %s\n", r->infer_method.c_str());
+    fprintf(f, "[Request] solver: %s\n", r->solver.c_str());
+    if (r->solver == SOLVER_STORK4) {
+        fprintf(f, "[Request] stork_substeps: %d\n", r->stork_substeps);
+    }
+    if (r->solver == SOLVER_STORM) {
+        fprintf(f,
+                "[Request] storm: rk=%s stiff=%.3f cache=%d substep=%s lookback=%s restarts=%s\n",
+                r->storm_rk_order.c_str(), r->storm_stiffness_threshold, r->storm_cache_depth,
+                r->storm_adaptive_sub_step ? "true" : "false", r->storm_look_back_enabled ? "true" : "false",
+                r->storm_enable_restarts ? r->storm_restart_steps.c_str() : "false");
+    }
+    if (r->infer_method != INFER_ODE) {
+        fprintf(f, "[Request] legacy infer_method: %s\n", r->infer_method.c_str());
+    }
     fprintf(f, "[Request] schedule_method: %s\n", r->schedule_method.c_str());
     fprintf(f, "[Request] lm_mode: %s\n", r->lm_mode.c_str());
     fprintf(f, "[Request] output_format: %s\n", r->output_format.c_str());

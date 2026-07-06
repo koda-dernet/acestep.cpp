@@ -15,9 +15,35 @@ inline constexpr const char * TASK_LEGO        = "lego";
 inline constexpr const char * TASK_EXTRACT     = "extract";
 inline constexpr const char * TASK_COMPLETE    = "complete";
 
-// inference method identifiers (DiT diffusion solver); see solvers/solver-registry.h
+// Solver identifiers (DiT diffusion sampler, see src/solvers).
+// The string is the canonical solver name resolved by solver_lookup().
+inline constexpr const char * SOLVER_EULER  = "euler";
+inline constexpr const char * SOLVER_SDE    = "sde";
+inline constexpr const char * SOLVER_DPM3M  = "dpm3m";
+inline constexpr const char * SOLVER_STORK4 = "stork4";
+inline constexpr const char * SOLVER_STORM  = "storm";
+
+// STORK4 sub stepping count (Chebyshev recurrence depth). Higher values
+// stabilize stiff trajectories at the cost of arithmetic, halved on NaN.
+inline constexpr int STORK_SUBSTEPS_DEFAULT = 10;
+
+// Legacy inference method identifiers. Accepted as input only; `solver` is canonical.
 inline constexpr const char * INFER_ODE = "ode";
 inline constexpr const char * INFER_SDE = "sde";
+
+// Map the legacy `infer_method` field to a solver name. Single source of
+// truth for the migration: request_parse uses it when a request carries
+// infer_method without solver, and the synth pipeline uses it for requests
+// constructed programmatically with an empty solver.
+inline std::string legacy_infer_to_solver(const std::string & infer_method) {
+    if (infer_method.empty() || infer_method == INFER_ODE) {
+        return SOLVER_EULER;
+    }
+    if (infer_method == INFER_SDE) {
+        return SOLVER_SDE;
+    }
+    return infer_method;
+}
 
 // flow-matching timestep schedule (DiT); see schedulers/scheduler-registry.h
 inline constexpr const char * SCHEDULE_LINEAR = "linear";

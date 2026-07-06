@@ -11,10 +11,21 @@
 // use model_fn to re-evaluate the DiT at intermediate timesteps.
 // Single-evaluation solvers (Euler, DPM, JKASS Fast, STORK) ignore model_fn.
 
+#include <cstdint>
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <string>
 #include <vector>
+
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+
+#include "../../vendor/storm_sampler/storm_sampler_core.hpp"
 
 // ---------------------------------------------------------------------------
 // Model callback for multi-evaluation solvers
@@ -33,8 +44,21 @@ using SolverModelFn = std::function<void(const float *, float)>;
 // Persistent solver state (survives across steps within a single generation)
 // ---------------------------------------------------------------------------
 
+using StormConfig = storm::Config;
+
+struct StormRuntimeState {
+    std::vector<storm::CacheEntry> v_cache;
+    storm::StiffnessBaseline       baseline;
+    bool                           initialized = false;
+    bool                           lb_initialized = false;
+    std::vector<float>             x_prev_lb;
+    float                          sigma_max = 1.0f;
+};
+
 struct SolverState {
     int step_index = 0;
+    int total_steps = 0;
+    bool injected_noise_this_step = false;
 
     // ── DPM++ 2M / 3M: velocity history ──────────────────────────
     std::vector<float> prev_vt;       // [n] previous step's velocity
@@ -54,6 +78,10 @@ struct SolverState {
     };
     std::vector<VelocityRecord> velocity_history;
     int                         stork_substeps = 10;
+
+    // STORM: adaptive hybrid STORK/Taylor-memory + DPM++3M state.
+    StormConfig       storm_config;
+    StormRuntimeState storm;
 
     // ── SDE: per-batch seeds for Philox re-noising ───────────────
     const int64_t * seeds    = nullptr;

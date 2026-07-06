@@ -152,6 +152,8 @@ static int dit_ggml_generate(DiTGGML *           model,
                              const float *   enc_switch         = nullptr,
                              const int *     real_enc_S_switch  = nullptr,
                              const char *    solver_name        = "euler",
+                             int             stork_substeps     = 10,
+                             const StormConfig * storm_config   = nullptr,
                              const int64_t * seeds              = nullptr,
                              bool            use_batch_cfg      = true,
                              float           dcw_scaler         = 0.0f,
@@ -397,9 +399,14 @@ static int dit_ggml_generate(DiTGGML *           model,
     fprintf(stderr, "[DiT] Solver: %s (%s)\n", solver_info->display_name, solver_info->name);
 
     SolverState       solver_state{};
+    solver_state.total_steps      = num_steps;
     solver_state.seeds            = seeds;
     solver_state.batch_n          = N;
     solver_state.n_per            = n_per;
+    solver_state.stork_substeps   = stork_substeps;
+    if (storm_config) {
+        solver_state.storm_config = *storm_config;
+    }
     solver_state.xt_scratch.resize(n_total);
 
     auto evaluate_velocity = [&](const float * xt_in, float t_val) {
@@ -581,21 +588,33 @@ static int dit_ggml_generate(DiTGGML *           model,
 
         // step update (all N samples)
         if (step == num_steps - 1) {
-            // final step: predict x0 (same for ODE and SDE)
-            for (int i = 0; i < n_total; i++) {
-                output[i] = xt[i] - vt[i] * t_curr;
+            if (solver_info->solve_final_step && solver_info->needs_model_fn && !solver_info->is_stochastic) {
+                // Optional final-aware path: let multi-eval ODE solvers handle
+                // the last interval to t=0 instead of a one-shot Euler x0.
+                solver_state.step_index = step;
+                solver_state.injected_noise_this_step = false;
+                SolverModelFn model_fn = evaluate_velocity;
+                solver_info->step_fn(xt.data(), vt.data(), t_curr, 0.0f, n_total, solver_state, model_fn, vt.data());
+                memcpy(output, xt.data(), n_total * sizeof(float));
+            } else {
+                // final step: predict x0 (same for ODE and SDE)
+                for (int i = 0; i < n_total; i++) {
+                    output[i] = xt[i] - vt[i] * t_curr;
+                }
             }
         } else {
             float t_next = schedule[step + 1];
 
             solver_state.step_index = step;
+            solver_state.injected_noise_this_step = false;
             SolverModelFn model_fn = evaluate_velocity;
             solver_info->step_fn(xt.data(), vt.data(), t_curr, t_next, n_total, solver_state, model_fn, vt.data());
 
             // DCW: Differential Correction in Wavelet domain (CVPR 2026).
             // ODE / non-stochastic solvers only (skip for SDE / stochastic paths).
+            bool solver_noise_active = (solver_info->is_stochastic && seeds) || solver_state.injected_noise_this_step;
             bool dcw_active =
-                (dcw_scaler > 0.0f || dcw_high_scaler > 0.0f) && !(solver_info->is_stochastic && seeds);
+                (dcw_scaler > 0.0f || dcw_high_scaler > 0.0f) && !solver_noise_active;
             if (dcw_active) {
                 int                Tl = (T + 1) / 2;
                 std::vector<float> denoised(n_per);

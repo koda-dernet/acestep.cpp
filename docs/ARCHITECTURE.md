@@ -505,6 +505,29 @@ their own, but without caption the LLM has nothing to work from.
     "latent_shift":         0.0,
     "latent_rescale":       1.0,
     "custom_timesteps":     "",
+    "solver":               "euler",
+    "stork_substeps":       10,
+    "storm_stiffness_threshold": 0.15,
+    "storm_hysteresis_margin":   0.05,
+    "storm_ema_alpha":           0.30,
+    "storm_cache_depth":         5,
+    "storm_rk_order":            "auto",
+    "storm_calib_frac":          0.12,
+    "storm_adaptive_sub_step":   true,
+    "storm_sub_step_threshold":  0.0,
+    "storm_sub_step_max_depth":  2,
+    "storm_look_back_enabled":   true,
+    "storm_look_back_lambda":    0.35,
+    "storm_look_back_snr_power": 1.5,
+    "storm_enable_restarts":     false,
+    "storm_restart_steps":       "",
+    "storm_restart_noise_scale": 0.5,
+    "storm_restart_s_noise":     1.0,
+    "storm_restart_seed":        42,
+    "storm_restart_flush_cache": true,
+    "storm_restart_aligned_noise": true,
+    "storm_force_pure_euler":    false,
+    "storm_verbose":             false,
     "task_type":            "text2music",
     "track":                "",
     "infer_method":         "ode",
@@ -735,12 +758,36 @@ Flow-matching schedule shift. Controls the timestep distribution.
 `shift = s*t / (1 + (s-1)*t)`. `0.0` resolves from the loaded model:
 turbo = `3.0`, base/SFT = `1.0`.
 
-**`infer_method`** (string, default `"ode"`)
-Diffusion solver. `"ode"` uses ODE Euler (one model eval per step,
+**`solver`** (string, default `"euler"`)
+Diffusion solver. `"euler"` uses ODE Euler (one model eval per step,
 same seed always gives same result). `"sde"` uses SDE Stochastic (predicts x0
 then re-noises with fresh Philox noise at each step, producing varied results
 across different trajectories). SDE is reproducible: the per-step noise is
 derived from the original seed so the same seed gives the same SDE trajectory.
+The upstream-style built-in names are `"euler"`, `"sde"`, `"dpm3m"`, and
+`"stork4"`; this fork also keeps its extra registered solvers.
+
+`"storm"` enables the MD STORM hybrid solver: it auto-calibrates velocity
+stiffness, dispatches stiff steps to cached RK/Taylor memory, smooth steps to
+DPM++3M, and applies the source sampler's look-back smoothing by default.
+Advanced STORM controls are explicit JSON fields, for example:
+
+```json
+{
+  "solver": "storm",
+  "storm_rk_order": "4",
+  "storm_look_back_enabled": false,
+  "storm_stiffness_threshold": 0.12,
+  "storm_sub_step_threshold": -0.1,
+  "storm_enable_restarts": true,
+  "storm_restart_steps": "10,20"
+}
+```
+
+**`infer_method`** (string, default `"ode"`, legacy)
+Accepted for old clients only. If `solver` is absent, `"ode"` maps to
+`"euler"`, `"sde"` maps to `"sde"`, and other names pass through as solver
+names. If both fields are present, `solver` wins.
 
 Turbo preset: `inference_steps=8, guidance_scale=1.0, shift=3.0`.
 Base/SFT preset: `inference_steps=50, guidance_scale=1.0, shift=1.0`.

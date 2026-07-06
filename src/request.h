@@ -92,6 +92,35 @@ struct AceRequest {
     // "sgm_uniform", "power:2.5", "beta:0.5:0.7", "composite:A+B:cross:split".
     std::string schedule_method;  // "linear"
 
+    // Solver name resolved by solver_lookup() (see src/solvers).
+    // Canonical values include "euler", "sde", "dpm3m", "stork4", "storm",
+    // plus the extra local solver names registered by this fork.
+    std::string solver;          // "euler"
+    int         stork_substeps;  // 10, only used by the "stork4" solver
+
+    // MD STORM solver controls (active only when solver == "storm").
+    float       storm_stiffness_threshold;  // 0.15
+    float       storm_hysteresis_margin;    // 0.05
+    float       storm_ema_alpha;            // 0.30
+    int         storm_cache_depth;          // 5
+    std::string storm_rk_order;             // "auto" or "1".."5"
+    float       storm_calib_frac;           // 0.12
+    bool        storm_adaptive_sub_step;    // true
+    float       storm_sub_step_threshold;   // 0.0
+    int         storm_sub_step_max_depth;   // 2
+    bool        storm_look_back_enabled;    // true
+    float       storm_look_back_lambda;     // 0.35
+    float       storm_look_back_snr_power;  // 1.5
+    bool        storm_enable_restarts;      // false
+    std::string storm_restart_steps;        // comma-separated step indices
+    float       storm_restart_noise_scale;  // 0.5
+    float       storm_restart_s_noise;      // 1.0
+    int64_t     storm_restart_seed;         // 42
+    bool        storm_restart_flush_cache;  // true
+    bool        storm_restart_aligned_noise;// true
+    bool        storm_force_pure_euler;     // false
+    bool        storm_verbose;              // false
+
     // task type: one of text2music, cover, cover-nofsq, repaint, lego, extract, complete.
     // Default: text2music.
     std::string task_type;  // "text2music"
@@ -99,7 +128,8 @@ struct AceRequest {
     // track name for lego/extract/complete (e.g. "vocals", "drums", "guitar")
     std::string track;  // ""
 
-    // inference method: "ode" = ODE Euler, "sde" = SDE Stochastic. Default: ode.
+    // Legacy inference method input. New requests should use `solver`.
+    // Accepted values: "ode" = Euler, "sde" = SDE, or any registered solver name.
     std::string infer_method;  // "ode"
 
     // LM mode: "generate" (full: metadata + lyrics + codes),
