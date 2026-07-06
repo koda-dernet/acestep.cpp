@@ -16,9 +16,12 @@ export const TASK_LEGO = 'lego';
 export const TASK_EXTRACT = 'extract';
 export const TASK_COMPLETE = 'complete';
 
-// inference method (mirrors task-types.h INFER_*)
-export const INFER_ODE = 'ode';
-export const INFER_SDE = 'sde';
+// solvers (mirrors task-types.h SOLVER_*)
+export const SOLVER_EULER = 'euler';
+export const SOLVER_SDE = 'sde';
+export const SOLVER_DPM3M = 'dpm3m';
+export const SOLVER_STORK4 = 'stork4';
+export const SOLVER_STORM = 'storm';
 
 /** Default timestep schedule id (mirrors SCHEDULE_LINEAR / request defaults). */
 export const SCHEDULE_LINEAR = 'linear';

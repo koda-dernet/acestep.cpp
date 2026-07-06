@@ -2,7 +2,13 @@ import type { AceRequest, AceProps, Song } from './types.js';
 
 const STORAGE_KEY = 'ace';
 
+// bump when the persisted shape changes incompatibly (renamed request
+// fields, changed semantics). Older payloads keep cosmetic prefs but drop
+// the saved request, so stale values can't silently mask new defaults.
+const STORAGE_VERSION = 2;
+
 interface Saved {
+	version?: number;
 	name: string;
 	volume: number;
 	format: string;
@@ -16,6 +22,9 @@ function load(): Saved {
 		const raw = localStorage.getItem(STORAGE_KEY);
 		if (raw) {
 			const parsed = JSON.parse(raw);
+			if ((parsed.version ?? 1) !== STORAGE_VERSION) {
+				parsed.request = { caption: '', use_cot_caption: true };
+			}
 			return {
 				name: parsed.name || '',
 				volume: parsed.volume ?? 0.5,
@@ -103,6 +112,7 @@ $effect.root(() => {
 $effect.root(() => {
 	$effect(() => {
 		const data: Saved = {
+			version: STORAGE_VERSION,
 			name: app.name,
 			volume: app.volume,
 			format: app.format,

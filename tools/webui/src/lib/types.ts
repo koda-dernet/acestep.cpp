@@ -38,6 +38,29 @@ export interface AceRequest {
 	schedule_method?: string;
 	task_type?: string;
 	track?: string;
+	solver?: string;
+	stork_substeps?: number;
+	storm_stiffness_threshold?: number;
+	storm_hysteresis_margin?: number;
+	storm_ema_alpha?: number;
+	storm_cache_depth?: number;
+	storm_rk_order?: string;
+	storm_calib_frac?: number;
+	storm_adaptive_sub_step?: boolean;
+	storm_sub_step_threshold?: number;
+	storm_sub_step_max_depth?: number;
+	storm_look_back_enabled?: boolean;
+	storm_look_back_lambda?: number;
+	storm_look_back_snr_power?: number;
+	storm_enable_restarts?: boolean;
+	storm_restart_steps?: string;
+	storm_restart_noise_scale?: number;
+	storm_restart_s_noise?: number;
+	storm_restart_seed?: number;
+	storm_restart_flush_cache?: boolean;
+	storm_restart_aligned_noise?: boolean;
+	storm_force_pure_euler?: boolean;
+	storm_verbose?: boolean;
 	infer_method?: string;
 	peak_clip?: number;
 	mp3_bitrate?: number;
@@ -52,6 +75,27 @@ export interface AceRequest {
 	vae?: string;
 }
 
+// named entry in a server-side registry (solvers, schedules)
+export interface NamedOption {
+	name: string;
+	display: string;
+}
+
+// outcome of the server's most recent adapter merge (GET /props).
+// skipped>0 usually means the adapter targets a different base model width;
+// ok=false means the merge failed entirely (no tensors applied).
+export interface AdapterMergeInfo {
+	ok: boolean;
+	path: string;
+	algo: string;
+	merged: number;
+	skipped: number;
+	scale: number;
+	scale_self: number;
+	scale_cross: number;
+	scale_mlp: number;
+}
+
 // GET /props response
 export interface AceProps {
 	version: string;
@@ -63,6 +107,11 @@ export interface AceProps {
 		'pp-vae'?: string[];
 	};
 	adapters: string[];
+	// served from the C++ registries; absent on older servers
+	solvers?: NamedOption[];
+	schedules?: NamedOption[];
+	tracks?: string[];
+	adapter_merge?: AdapterMergeInfo;
 	cli: Record<string, string | number>;
 	default: AceRequest;
 	presets: {

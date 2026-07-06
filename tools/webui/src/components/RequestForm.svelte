@@ -48,8 +48,10 @@
 		TASK_LEGO,
 		TASK_EXTRACT,
 		TASK_COMPLETE,
-		INFER_ODE,
-		INFER_SDE,
+		SOLVER_EULER,
+		SOLVER_SDE,
+		SOLVER_STORK4,
+		SOLVER_STORM,
 		SCHEDULE_LINEAR,
 		SCHEDULE_CUSTOM_SENTINEL,
 		DCW_MODE_LOW,
@@ -82,6 +84,11 @@
 	let adapterStale = $derived(
 		!!app.request.adapter && !adapterList.includes(String(app.request.adapter))
 	);
+	// server-side adapter merge outcome (refreshed with the /props poll)
+	let adapterMerge = $derived(app.props?.adapter_merge);
+	let adapterMergeName = $derived(adapterMerge?.path.split(/[\\/]/).pop() ?? '');
+	// track names served by the newer /props; static fallback for older servers
+	let trackNames = $derived(app.props?.tracks?.length ? app.props.tracks : TRACK_NAMES);
 	let taskType = $derived(app.request.task_type || '');
 	let dp = $derived(
 		app.props?.presets
@@ -103,8 +110,53 @@
 		if (app.request.peak_clip == null) app.request.peak_clip = d.peak_clip;
 		if (app.request.task_type == null || app.request.task_type === '')
 			app.request.task_type = d.task_type;
-		if (app.request.infer_method == null || app.request.infer_method === '')
-			app.request.infer_method = d.infer_method;
+		if (app.request.solver == null || app.request.solver === '') {
+			if (app.request.infer_method && app.request.infer_method !== 'ode') {
+				app.request.solver = app.request.infer_method === 'sde' ? SOLVER_SDE : app.request.infer_method;
+			} else {
+				app.request.solver = d.solver;
+			}
+		}
+		if (app.request.stork_substeps == null) app.request.stork_substeps = d.stork_substeps;
+		if (app.request.storm_stiffness_threshold == null)
+			app.request.storm_stiffness_threshold = d.storm_stiffness_threshold;
+		if (app.request.storm_hysteresis_margin == null)
+			app.request.storm_hysteresis_margin = d.storm_hysteresis_margin;
+		if (app.request.storm_ema_alpha == null) app.request.storm_ema_alpha = d.storm_ema_alpha;
+		if (app.request.storm_cache_depth == null) app.request.storm_cache_depth = d.storm_cache_depth;
+		if (app.request.storm_rk_order == null || app.request.storm_rk_order === '')
+			app.request.storm_rk_order = d.storm_rk_order;
+		if (app.request.storm_calib_frac == null)
+			app.request.storm_calib_frac = d.storm_calib_frac;
+		if (app.request.storm_adaptive_sub_step == null)
+			app.request.storm_adaptive_sub_step = d.storm_adaptive_sub_step;
+		if (app.request.storm_sub_step_threshold == null)
+			app.request.storm_sub_step_threshold = d.storm_sub_step_threshold;
+		if (app.request.storm_sub_step_max_depth == null)
+			app.request.storm_sub_step_max_depth = d.storm_sub_step_max_depth;
+		if (app.request.storm_look_back_enabled == null)
+			app.request.storm_look_back_enabled = d.storm_look_back_enabled;
+		if (app.request.storm_look_back_lambda == null)
+			app.request.storm_look_back_lambda = d.storm_look_back_lambda;
+		if (app.request.storm_look_back_snr_power == null)
+			app.request.storm_look_back_snr_power = d.storm_look_back_snr_power;
+		if (app.request.storm_enable_restarts == null)
+			app.request.storm_enable_restarts = d.storm_enable_restarts;
+		if (app.request.storm_restart_steps == null)
+			app.request.storm_restart_steps = d.storm_restart_steps;
+		if (app.request.storm_restart_noise_scale == null)
+			app.request.storm_restart_noise_scale = d.storm_restart_noise_scale;
+		if (app.request.storm_restart_s_noise == null)
+			app.request.storm_restart_s_noise = d.storm_restart_s_noise;
+		if (app.request.storm_restart_seed == null)
+			app.request.storm_restart_seed = d.storm_restart_seed;
+		if (app.request.storm_restart_flush_cache == null)
+			app.request.storm_restart_flush_cache = d.storm_restart_flush_cache;
+		if (app.request.storm_restart_aligned_noise == null)
+			app.request.storm_restart_aligned_noise = d.storm_restart_aligned_noise;
+		if (app.request.storm_force_pure_euler == null)
+			app.request.storm_force_pure_euler = d.storm_force_pure_euler;
+		if (app.request.storm_verbose == null) app.request.storm_verbose = d.storm_verbose;
 		if (app.request.schedule_method == null || app.request.schedule_method === '')
 			app.request.schedule_method = d.schedule_method ?? SCHEDULE_LINEAR;
 		if (app.request.dcw_mode == null || app.request.dcw_mode === '')
@@ -161,9 +213,9 @@
 		selectedTracks = next;
 	}
 
-	// sync set to request string (preserve TRACK_NAMES order)
+	// sync set to request string (preserve server track order)
 	$effect(() => {
-		app.request.track = TRACK_NAMES.filter((n: string) => selectedTracks.has(n)).join(' | ');
+		app.request.track = trackNames.filter((n: string) => selectedTracks.has(n)).join(' | ');
 	});
 
 	// clear tracks when task has no use for them, trim to 1 for radio modes
@@ -480,10 +532,15 @@
 			const srcSong = app.srcSongId != null ? app.songs.find((s) => s.id === app.srcSongId) : null;
 			const refSong = app.refSongId != null ? app.songs.find((s) => s.id === app.refSongId) : null;
 
-			// extract DiT variant from model filename ("acestep-v15-xl-turbo-Q8_0.gguf" -> "xl-turbo")
+			// extract a short DiT variant for the song-card suffix. Try the
+			// canonical acestep naming first ("acestep-v15-xl-turbo-Q8_0.gguf"
+			// -> "xl-turbo"), else strip extension/quant so renamed or future
+			// models still get a readable label instead of an empty string.
 			const model = String(app.request.synth_model || '');
-			const vm = model.match(/^acestep-v15-(.+?)-(Q\d.*|BF16)\.gguf$/);
-			const variant = vm ? vm[1] : '';
+			const vm = model.match(/^acestep-v\d+-(.+?)-(Q\d.*|BF16|F16|F32)\.gguf$/i);
+			const variant = vm
+				? vm[1]
+				: model.replace(/\.gguf$/i, '').replace(/-(Q\d[^-]*|BF16|F16|F32)$/i, '');
 			const baseName = app.name || 'Untitled';
 
 			// submit job, poll until done, fetch result. When the source song
@@ -582,16 +639,19 @@
 		{ text: 'Extract: isolate one stem from a mix', value: TASK_EXTRACT },
 		{ text: 'Complete: auto-arrange around a partial track', value: TASK_COMPLETE }
 	];
-	let methodOptions = [
-		{ text: 'ODE → Euler (legacy)', value: INFER_ODE },
-		{ text: 'Euler', value: 'euler' },
-		{ text: 'SDE stochastic', value: INFER_SDE },
+	// solver list comes from the server's registry via /props so the dropdown
+	// can never offer a solver this build doesn't have; the static list is a
+	// fallback for older servers that don't send it.
+	const solverFallback = [
+		{ text: 'Euler', value: SOLVER_EULER },
+		{ text: 'SDE stochastic', value: SOLVER_SDE },
 		{ text: 'Heun (2× forward/step)', value: 'heun' },
 		{ text: 'RK4 (4× forward/step)', value: 'rk4' },
 		{ text: 'RK5 (6× forward/step)', value: 'rk5' },
 		{ text: 'DPM++ 2M', value: 'dpm2m' },
 		{ text: 'DPM++ 3M', value: 'dpm3m' },
 		{ text: 'DPM++ 2M adaptive', value: 'dpm2m_ada' },
+		{ text: 'STORM hybrid', value: SOLVER_STORM },
 		{ text: 'JKASS fast', value: 'jkass_fast' },
 		{ text: 'JKASS quality', value: 'jkass_quality' },
 		{ text: 'STORK 2', value: 'stork2' },
@@ -600,9 +660,13 @@
 		{ text: 'DOP853', value: 'dop853' },
 		{ text: 'Gauss–Legendre 2s', value: 'gl2s' }
 	];
+	let solverOptions = $derived(
+		app.props?.solvers?.length
+			? app.props.solvers.map((s) => ({ text: s.display, value: s.name }))
+			: solverFallback
+	);
 
-	const schedulePresetOptions = [
-		{ text: 'Custom / parameterized…', value: SCHEDULE_CUSTOM_SENTINEL },
+	const scheduleFallback = [
 		{ text: 'Linear', value: 'linear' },
 		{ text: 'Cosine', value: 'cosine' },
 		{ text: 'DDIM uniform', value: 'ddim_uniform' },
@@ -613,6 +677,12 @@
 		{ text: 'Power (default exp)', value: 'power' },
 		{ text: 'Beta 57', value: 'beta57' }
 	];
+	let schedulePresetOptions = $derived([
+		{ text: 'Custom / parameterized…', value: SCHEDULE_CUSTOM_SENTINEL },
+		...(app.props?.schedules?.length
+			? app.props.schedules.map((s) => ({ text: s.display, value: s.name }))
+			: scheduleFallback)
+	]);
 
 	let schedulePresetSelectValue = $derived.by(() => {
 		const raw = (app.request.schedule_method ?? '').trim() || SCHEDULE_LINEAR;
@@ -624,6 +694,14 @@
 		{ text: 'High', value: DCW_MODE_HIGH },
 		{ text: 'Double', value: DCW_MODE_DOUBLE },
 		{ text: 'Pix', value: DCW_MODE_PIX }
+	];
+	let stormOrderOptions = [
+		{ text: 'Auto', value: 'auto' },
+		{ text: 'RK1', value: '1' },
+		{ text: 'RK2', value: '2' },
+		{ text: 'RK3', value: '3' },
+		{ text: 'RK4', value: '4' },
+		{ text: 'RK5', value: '5' }
 	];
 
 	// Repaint start/end are bound to srcRange* (which syncs to request.repainting_*).
@@ -723,6 +801,21 @@
 					/>
 					<NumericTextFieldOutlined label="MLP" bind:value={app.request.adapter_scale_mlp} />
 				</div>
+				{#if app.request.adapter && adapterMerge}
+					<div class="adapter-status" class:bad={!adapterMerge.ok || adapterMerge.skipped > 0}>
+						{#if !adapterMerge.ok}
+							Server: adapter <b>{adapterMergeName}</b> failed to merge — no tensors applied
+							(wrong base model?)
+						{:else if adapterMerge.skipped > 0}
+							Server: adapter <b>{adapterMergeName}</b> only partially applied — {adapterMerge.merged}
+							merged, {adapterMerge.skipped} skipped (likely built for a different base model)
+						{:else}
+							Server: adapter <b>{adapterMergeName}</b> active ({adapterMerge.algo}, {adapterMerge.merged}
+							tensors) @ {adapterMerge.scale}× · self {adapterMerge.scale_self} · cross {adapterMerge.scale_cross}
+							· mlp {adapterMerge.scale_mlp}
+						{/if}
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</div>
@@ -841,7 +934,7 @@
 				<div class="chip-row">
 					<span class="inline-label">Track</span>
 					<div class="chip-wrap">
-						{#each TRACK_NAMES as name}
+						{#each trackNames as name}
 							<Chip
 								variant="input"
 								icon={selectedTracks.has(name) ? iconCheck : undefined}
@@ -921,13 +1014,133 @@
 					placeholder="linear · cosine · power:2 · composite:linear+cosine:0.5:0.5 …"
 				/>
 				<SelectOutlined
-					label="Solver (infer_method)"
-					options={methodOptions}
-					value={app.request.infer_method || ''}
+					label="Solver"
+					options={solverOptions}
+					value={app.request.solver || ''}
 					onchange={(e) => {
-						app.request.infer_method = (e.target as HTMLSelectElement).value;
+						app.request.solver = (e.target as HTMLSelectElement).value;
 					}}
 				/>
+				{#if app.request.solver === SOLVER_STORK4}
+					<NumericTextFieldOutlined label="STORK substeps" bind:value={app.request.stork_substeps} />
+				{/if}
+				{#if app.request.solver === SOLVER_STORM}
+					<div class="storm-controls">
+						<SelectOutlined
+							label="STORM RK"
+							options={stormOrderOptions}
+							value={app.request.storm_rk_order || 'auto'}
+							onchange={(e) => {
+								app.request.storm_rk_order = (e.target as HTMLSelectElement).value;
+							}}
+						/>
+						<NumericTextFieldOutlined
+							label="Stiffness"
+							bind:value={app.request.storm_stiffness_threshold}
+						/>
+						<NumericTextFieldOutlined
+							label="Hysteresis"
+							bind:value={app.request.storm_hysteresis_margin}
+						/>
+						<NumericTextFieldOutlined label="EMA" bind:value={app.request.storm_ema_alpha} />
+						<NumericTextFieldOutlined
+							label="Cache depth"
+							bind:value={app.request.storm_cache_depth}
+						/>
+						<NumericTextFieldOutlined label="Calib frac" bind:value={app.request.storm_calib_frac} />
+						<NumericTextFieldOutlined
+							label="Sub threshold"
+							bind:value={app.request.storm_sub_step_threshold}
+						/>
+						<NumericTextFieldOutlined
+							label="Sub depth"
+							bind:value={app.request.storm_sub_step_max_depth}
+						/>
+						<NumericTextFieldOutlined
+							label="LB lambda"
+							bind:value={app.request.storm_look_back_lambda}
+						/>
+						<NumericTextFieldOutlined
+							label="LB SNR"
+							bind:value={app.request.storm_look_back_snr_power}
+						/>
+						<TextFieldOutlined
+							label="Restart steps"
+							bind:value={app.request.storm_restart_steps}
+							placeholder="10,20"
+						/>
+						<NumericTextFieldOutlined
+							label="Restart scale"
+							bind:value={app.request.storm_restart_noise_scale}
+						/>
+						<NumericTextFieldOutlined
+							label="Restart S"
+							bind:value={app.request.storm_restart_s_noise}
+						/>
+						<NumericTextFieldOutlined
+							label="Restart seed"
+							bind:value={app.request.storm_restart_seed}
+						/>
+					</div>
+					<div class="chip-row">
+						<span class="inline-label">STORM</span>
+						<div class="chip-wrap">
+							<Chip
+								variant="input"
+								selected={app.request.storm_adaptive_sub_step === true}
+								onclick={() =>
+									(app.request.storm_adaptive_sub_step =
+										!app.request.storm_adaptive_sub_step)}
+								>Substep</Chip
+							>
+							<Chip
+								variant="input"
+								selected={app.request.storm_look_back_enabled === true}
+								onclick={() =>
+									(app.request.storm_look_back_enabled =
+										!app.request.storm_look_back_enabled)}
+								>Look-back</Chip
+							>
+							<Chip
+								variant="input"
+								selected={app.request.storm_enable_restarts === true}
+								onclick={() =>
+									(app.request.storm_enable_restarts = !app.request.storm_enable_restarts)}
+								>Restarts</Chip
+							>
+							<Chip
+								variant="input"
+								selected={app.request.storm_restart_flush_cache === true}
+								onclick={() =>
+									(app.request.storm_restart_flush_cache =
+										!app.request.storm_restart_flush_cache)}
+								>Flush</Chip
+							>
+							<Chip
+								variant="input"
+								selected={app.request.storm_restart_aligned_noise === true}
+								onclick={() =>
+									(app.request.storm_restart_aligned_noise =
+										!app.request.storm_restart_aligned_noise)}
+								>Aligned</Chip
+							>
+							<Chip
+								variant="input"
+								selected={app.request.storm_force_pure_euler === true}
+								onclick={() =>
+									(app.request.storm_force_pure_euler =
+										!app.request.storm_force_pure_euler)}
+								>Euler</Chip
+							>
+							<Chip
+								variant="input"
+								selected={app.request.storm_verbose === true}
+								onclick={() => (app.request.storm_verbose = !app.request.storm_verbose)}
+								>Verbose</Chip
+							>
+						</div>
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</div>
@@ -1151,6 +1364,18 @@
 		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 0.75rem;
 	}
+	.adapter-status {
+		font-size: 0.75rem;
+		line-height: 1.35;
+		padding: 0.375rem 0.625rem;
+		border-radius: 0.5rem;
+		background: rgb(var(--m3-scheme-surface-container-high));
+		color: rgb(var(--m3-scheme-on-surface-variant));
+	}
+	.adapter-status.bad {
+		background: rgb(var(--m3-scheme-error-container));
+		color: rgb(var(--m3-scheme-on-error-container));
+	}
 
 	/* Lyrics block: multiline + instrumental chip stacked */
 	.lyrics-block {
@@ -1189,6 +1414,11 @@
 	.grid-2col {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
+		gap: 1rem;
+	}
+	.storm-controls {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: 1rem;
 	}
 

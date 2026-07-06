@@ -78,14 +78,13 @@ export function synthSubmitWithAudio(
 	return submitJob('synth', { method: 'POST', body: form });
 }
 
-// GET /job?id=X: poll job status
-export async function jobStatus(id: string): Promise<string> {
+// GET /job?id=X: poll job status (+ failure detail when the server has one)
+export async function jobStatus(id: string): Promise<{ status: string; detail?: string }> {
 	const res = await fetch(`job?id=${encodeURIComponent(id)}`, {
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
 	});
 	if (!res.ok) throw new Error(`${res.status} Job not found`);
-	const data = await res.json();
-	return data.status;
+	return res.json();
 }
 
 // poll until done, throws on failure or cancel.
@@ -96,9 +95,9 @@ export async function jobStatus(id: string): Promise<string> {
 export async function pollJob(id: string): Promise<void> {
 	for (;;) {
 		try {
-			const status = await jobStatus(id);
+			const { status, detail } = await jobStatus(id);
 			if (status === 'done') return;
-			if (status === 'failed') throw new Error('Generation failed');
+			if (status === 'failed') throw new Error(detail || 'Generation failed');
 			if (status === 'cancelled') throw new Error('Cancelled');
 		} catch (e) {
 			if (e instanceof TypeError || e instanceof DOMException) {
