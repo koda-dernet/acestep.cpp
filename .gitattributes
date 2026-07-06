@@ -1,1 +1,9 @@
 * text=auto eol=lf
+
+# md3ui: this branch fully replaces the upstream webui. Upstream still
+# develops its own UI at the same paths, so plain merges silently inject
+# upstream hunks into the MD3 rewrite. The merge=ours driver keeps our
+# side wholesale during upstream merges; port upstream UI features by hand.
+# Requires once per clone: git config merge.ours.driver true
+tools/webui/** merge=ours
+tools/public/** merge=ours
