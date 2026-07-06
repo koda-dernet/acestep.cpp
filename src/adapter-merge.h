@@ -50,6 +50,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -60,6 +61,42 @@ struct AdapterScales {
     float cross  = 1.0f;
     float mlp    = 1.0f;
 };
+
+// Outcome of the most recent adapter merge, exposed by ace-server via
+// GET /props so the webui can tell whether an adapter actually applied
+// (e.g. shape mismatches silently skip tensors otherwise). The merge runs
+// on the job worker thread while /props reads from HTTP threads, hence the
+// mutex. valid=false means the last attempt failed before any merge ran.
+struct AdapterMergeStats {
+    std::mutex    mtx;
+    bool          valid   = false;
+    std::string   path;
+    std::string   algo;  // "lora" | "lokr"
+    int           merged  = 0;
+    int           skipped = 0;
+    AdapterScales scales;
+};
+
+inline AdapterMergeStats g_adapter_merge_stats;
+
+static void adapter_stats_record(const char * algo, int merged, int skipped, const AdapterScales & scales) {
+    std::lock_guard<std::mutex> lock(g_adapter_merge_stats.mtx);
+    g_adapter_merge_stats.valid   = true;
+    g_adapter_merge_stats.algo    = algo;
+    g_adapter_merge_stats.merged  = merged;
+    g_adapter_merge_stats.skipped = skipped;
+    g_adapter_merge_stats.scales  = scales;
+}
+
+static void adapter_stats_begin(const char * path) {
+    std::lock_guard<std::mutex> lock(g_adapter_merge_stats.mtx);
+    g_adapter_merge_stats.valid   = false;
+    g_adapter_merge_stats.path    = path ? path : "";
+    g_adapter_merge_stats.algo.clear();
+    g_adapter_merge_stats.merged  = 0;
+    g_adapter_merge_stats.skipped = 0;
+    g_adapter_merge_stats.scales  = AdapterScales{};
+}
 
 static float adapter_effective_scale(const std::string & gguf_name, const AdapterScales & scales) {
     float module_scale = 1.0f;
@@ -653,6 +690,7 @@ static bool adapter_merge_lora(WeightCtx *         wctx,
 
     fprintf(stderr, "[Adapter] LoRA merged %d pairs (skipped %d), scale=%.2f self=%.2f cross=%.2f mlp=%.2f\n",
             merged, skipped, scales.global, scales.self, scales.cross, scales.mlp);
+    adapter_stats_record("lora", merged, skipped, scales);
     return merged > 0;
 }
 
@@ -969,6 +1007,7 @@ static bool adapter_merge_lokr(WeightCtx *       wctx,
             "self=%.2f cross=%.2f mlp=%.2f\n",
             merged, merged - mono_count, mono_count, dora_count, skipped, scales.global, scales.self, scales.cross,
             scales.mlp);
+    adapter_stats_record("lokr", merged, skipped, scales);
     return merged > 0;
 }
 
@@ -988,6 +1027,8 @@ static bool adapter_merge(WeightCtx *       wctx,
                           ggml_backend_t    backend) {
     std::string sf_path;
     std::string cfg_dir;
+
+    adapter_stats_begin(adapter_path);
 
     struct stat sb;
     if (stat(adapter_path, &sb) != 0) {

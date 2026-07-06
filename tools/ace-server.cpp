@@ -54,6 +54,12 @@
 #    pragma GCC diagnostic pop
 #endif
 
+// after httplib: these pull in windows.h transitively (mmap helpers), which
+// must not precede httplib's winsock2.h on Windows
+#include "adapter-merge.h"
+#include "schedulers/scheduler-registry.h"
+#include "solvers/solver-registry.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <csignal>
@@ -217,13 +223,22 @@ struct Job {
     std::atomic<JobStatus> status{ JobStatus::RUNNING };
     std::string            result_body;
     std::string            result_mime;
+    std::string            error;  // human-readable failure detail for GET /job
     std::atomic<bool>      cancel{ false };
 
-    // memory ordering contract: result_body and result_mime are written
-    // before status is stored (seq_cst). the client loads status (seq_cst)
-    // and only reads result fields after seeing done/failed. this guarantees
-    // visibility without an explicit mutex on the result fields.
+    // memory ordering contract: result_body, result_mime and error are
+    // written before status is stored (seq_cst). the client loads status
+    // (seq_cst) and only reads result fields after seeing done/failed. this
+    // guarantees visibility without an explicit mutex on the result fields.
 };
+
+// record a failure reason and flip the job to FAILED (error before status,
+// see the ordering contract above)
+static void job_fail(const std::shared_ptr<Job> & job, const std::string & msg) {
+    fprintf(stderr, "[Server] %s\n", msg.c_str());
+    job->error = msg;
+    job->status.store(JobStatus::FAILED);
+}
 
 static std::mutex                                            mtx_jobs;
 static std::unordered_map<std::string, std::shared_ptr<Job>> g_jobs;
@@ -710,26 +725,23 @@ static void synth_worker(std::shared_ptr<Job>    job,
     std::string        dit_name = resolve_name(g_registry.dit, ace_reqs[0].synth_model, g_loaded_dit);
     const ModelEntry * dit      = registry_find(g_registry.dit, dit_name.c_str());
     if (!dit) {
-        fprintf(stderr, "[Server] DiT not found: %s\n", dit_name.c_str());
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(JobStatus::FAILED);
+        job_fail(job, "DiT not found: " + dit_name);
         return;
     }
     if (g_registry.text_enc.empty() || g_registry.vae.empty()) {
-        fprintf(stderr, "[Server] Missing Text-Enc or VAE in registry\n");
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(JobStatus::FAILED);
+        job_fail(job, "Missing Text-Enc or VAE in registry");
         return;
     }
     std::string        vae_name = resolve_name(g_registry.vae, ace_reqs[0].vae, g_loaded_vae);
     const ModelEntry * vae      = registry_find(g_registry.vae, vae_name.c_str());
     if (!vae) {
-        fprintf(stderr, "[Server] VAE not found: %s\n", vae_name.c_str());
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(JobStatus::FAILED);
+        job_fail(job, "VAE not found: " + vae_name);
         return;
     }
 
@@ -746,10 +758,9 @@ static void synth_worker(std::shared_ptr<Job>    job,
     if (!ace_reqs[0].adapter.empty()) {
         const AdapterEntry * adapter = registry_find_adapter(g_registry, ace_reqs[0].adapter.c_str());
         if (!adapter) {
-            fprintf(stderr, "[Server] Adapter not found: %s\n", ace_reqs[0].adapter.c_str());
             free(src_interleaved);
             free(ref_interleaved);
-            job->status.store(JobStatus::FAILED);
+            job_fail(job, "Adapter not found: " + ace_reqs[0].adapter);
             return;
         }
         p.adapter_path  = adapter->path.c_str();
@@ -763,10 +774,9 @@ static void synth_worker(std::shared_ptr<Job>    job,
 
     AceSynth * ctx = ace_synth_load(g_store, &p);
     if (!ctx) {
-        fprintf(stderr, "[Server] FATAL: synth load failed\n");
         free(src_interleaved);
         free(ref_interleaved);
-        job->status.store(JobStatus::FAILED);
+        job_fail(job, "Synth load failed (see server logs)");
         return;
     }
 
@@ -822,7 +832,20 @@ static void synth_worker(std::shared_ptr<Job>    job,
         for (auto & a : audio) {
             ace_audio_free(&a);
         }
-        job->status.store(job->cancel.load() ? JobStatus::CANCELLED : JobStatus::FAILED);
+        if (job->cancel.load()) {
+            job->status.store(JobStatus::CANCELLED);
+        } else {
+            // adapter merge refusing every tensor is the most common cause
+            // of a load-time abort here — surface a hint with the counts
+            std::string msg = "Generation failed (see server logs)";
+            {
+                std::lock_guard<std::mutex> lock(g_adapter_merge_stats.mtx);
+                if (p.adapter_path && !g_adapter_merge_stats.valid) {
+                    msg = "Adapter merge failed: no tensors merged — adapter likely targets a different base model";
+                }
+            }
+            job_fail(job, msg);
+        }
         return;
     }
 
@@ -1538,6 +1561,52 @@ static void handle_props(const httplib::Request &, httplib::Response & res) {
     }
     yyjson_mut_obj_add_val(doc, root, "adapters", adapters_arr);
 
+    // solvers/schedules/tracks: served from the C++ registries so the webui
+    // dropdowns can never drift from what this build actually supports.
+    yyjson_mut_val * solvers = yyjson_mut_arr(doc);
+    for (int i = 0; i < SOLVER_REGISTRY_SIZE; i++) {
+        yyjson_mut_val * s = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_str(doc, s, "name", SOLVER_REGISTRY[i].name);
+        yyjson_mut_obj_add_str(doc, s, "display", SOLVER_REGISTRY[i].display_name);
+        yyjson_mut_arr_add_val(solvers, s);
+    }
+    yyjson_mut_obj_add_val(doc, root, "solvers", solvers);
+
+    yyjson_mut_val * schedules = yyjson_mut_arr(doc);
+    for (int i = 0; i < SCHEDULER_REGISTRY_SIZE; i++) {
+        yyjson_mut_val * s = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_str(doc, s, "name", SCHEDULER_REGISTRY[i].name);
+        yyjson_mut_obj_add_str(doc, s, "display", SCHEDULER_REGISTRY[i].display_name);
+        yyjson_mut_arr_add_val(schedules, s);
+    }
+    yyjson_mut_obj_add_val(doc, root, "schedules", schedules);
+
+    yyjson_mut_val * tracks = yyjson_mut_arr(doc);
+    for (int i = 0; i < TRACK_NAMES_COUNT; i++) {
+        yyjson_mut_arr_add_str(doc, tracks, TRACK_NAMES[i]);
+    }
+    yyjson_mut_obj_add_val(doc, root, "tracks", tracks);
+
+    // adapter_merge: outcome of the most recent adapter merge, so the UI can
+    // show whether the adapter actually applied (skipped>0 usually means the
+    // adapter was trained for a different base model width).
+    {
+        std::lock_guard<std::mutex> lock(g_adapter_merge_stats.mtx);
+        if (!g_adapter_merge_stats.path.empty()) {
+            yyjson_mut_val * am = yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_bool(doc, am, "ok", g_adapter_merge_stats.valid);
+            yyjson_mut_obj_add_str(doc, am, "path", g_adapter_merge_stats.path.c_str());
+            yyjson_mut_obj_add_str(doc, am, "algo", g_adapter_merge_stats.algo.c_str());
+            yyjson_mut_obj_add_int(doc, am, "merged", g_adapter_merge_stats.merged);
+            yyjson_mut_obj_add_int(doc, am, "skipped", g_adapter_merge_stats.skipped);
+            yyjson_mut_obj_add_real(doc, am, "scale", g_adapter_merge_stats.scales.global);
+            yyjson_mut_obj_add_real(doc, am, "scale_self", g_adapter_merge_stats.scales.self);
+            yyjson_mut_obj_add_real(doc, am, "scale_cross", g_adapter_merge_stats.scales.cross);
+            yyjson_mut_obj_add_real(doc, am, "scale_mlp", g_adapter_merge_stats.scales.mlp);
+            yyjson_mut_obj_add_val(doc, root, "adapter_merge", am);
+        }
+    }
+
     // cli: server settings
     yyjson_mut_val * cli = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_val(doc, root, "cli", cli);
@@ -1807,11 +1876,19 @@ int main(int argc, char ** argv) {
             res.set_content(job->result_body, job->result_mime);
             return;
         }
-        // default: return status JSON
-        std::string body = "{\"status\":\"";
-        body += job_status_str(job->status.load());
-        body += "\"}";
-        res.set_content(body, "application/json");
+        // default: return status JSON (+ failure detail when present)
+        JobStatus        status = job->status.load();
+        yyjson_mut_doc * doc    = yyjson_mut_doc_new(NULL);
+        yyjson_mut_val * root   = yyjson_mut_obj(doc);
+        yyjson_mut_doc_set_root(doc, root);
+        yyjson_mut_obj_add_str(doc, root, "status", job_status_str(status));
+        if (status == JobStatus::FAILED && !job->error.empty()) {
+            yyjson_mut_obj_add_str(doc, root, "detail", job->error.c_str());
+        }
+        char * json = yyjson_mut_write(doc, 0, NULL);
+        res.set_content(json, "application/json");
+        free(json);
+        yyjson_mut_doc_free(doc);
     });
     svr.Post("/job", [](const httplib::Request & req, httplib::Response & res) {
         if (!req.has_param("id")) {
@@ -1845,6 +1922,9 @@ int main(int argc, char ** argv) {
     // the .gz is committed to git so cloning + cmake + make gives a working UI.
     if (index_html_gz_len > 0) {
         svr.Get("/", [](const httplib::Request & req, httplib::Response & res) {
+            // no-cache: the UI is baked into the binary, so a stale browser
+            // cache would keep showing a previous build's UI after upgrades
+            res.set_header("Cache-Control", "no-cache");
             if (req.get_header_value("Accept-Encoding").find("gzip") == std::string::npos) {
                 res.set_content("Error: gzip is not supported by this browser", "text/plain");
             } else {
