@@ -1,10 +1,21 @@
-# acestep.cpp
+# acestep.cpp (md3ui fork)
 
 Local AI music generation server with browser UI, powered by GGML.
 Describe a song, get stereo 48kHz audio. Runs on CPU, CUDA, Metal, Vulkan.
 
-<img width="1704" height="773" alt="Light" src="https://github.com/user-attachments/assets/aeda150a-46a2-4542-a2d6-57d238a7bbb4" />
-<img width="1705" height="771" alt="Dark" src="https://github.com/user-attachments/assets/4941cec9-b6ff-4e09-8905-bdc3ee06d222" />
+This is a fork of [ServeurpersoCom/acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp)
+that differs from upstream in a few places:
+
+- The web UI is a full Material Design 3 rewrite (m3-svelte), not the upstream UI.
+- More solvers: DPM++ 2M/3M, Heun, RK4/RK5, DOPRI5, DOP853, Gauss-Legendre,
+  JKASS, STORK, STORM (with corrected integrator coefficients), plus extra
+  timestep schedules.
+- Adapter extras: LyCORIS LoKr (incl. DoRA), per-layer LoRA strength scaling
+  (self-attn / cross-attn / MLP), and the UI reports whether an adapter
+  actually merged.
+
+Development happens on the `md3ui` branch (the default). The `master` branch
+tracks upstream unmodified.
 
 ## Download models
 
@@ -27,13 +38,14 @@ Alternative: `./models.sh` downloads the default set automatically (needs `pip i
 ## Build
 
 ```
-git clone --recurse-submodules https://github.com/ServeurpersoCom/acestep.cpp.git
+git clone --recurse-submodules https://github.com/koda-dernet/acestep.cpp.git
 cd acestep.cpp
 ```
 
 ### Windows
 
-Pre-built binaries (until CI is set up): https://www.serveurperso.com/temp/acestep.cpp-win64/
+There are no pre-built binaries for this fork yet; build from source.
+(Upstream's binaries at serveurperso.com run the original UI, not this one.)
 
 To build from source, install
 [Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
@@ -74,9 +86,14 @@ automatically when you pick a different one in the UI.
 ## Adapters
 
 Drop adapters in the `adapters/` folder and restart the server.
-Supports LoRA today in two flavours: PEFT directories (with
-`adapter_model.safetensors` + `adapter_config.json`) and ComfyUI single
-`.safetensors` files. Select the active adapter from the WebUI.
+Three trainer formats are auto-detected: PEFT directories (with
+`adapter_model.safetensors` + `adapter_config.json`), ComfyUI single
+`.safetensors` files, and LyCORIS LoKr (factorized or monolithic, with
+optional DoRA). Select the active adapter and its strength from the WebUI;
+self-attention, cross-attention, and MLP strengths can be scaled
+independently. A status line under the adapter picker shows what the server
+actually merged — if it reports skipped tensors, the adapter was most
+likely trained for a different base model width (base/sft vs XL).
 
 ## Server options
 
@@ -201,7 +218,25 @@ https://github.com/user-attachments/assets/292a31f1-f97e-4060-9207-ed8364d9a794
 
 https://github.com/user-attachments/assets/34b1b781-a5bc-46c4-90a6-615a10bc2c6a
 
+## Contributing / fork maintenance
+
+The web UI paths (`tools/webui/`, `tools/public/`) use a `merge=ours` driver
+so merges from upstream don't inject the upstream UI into the rewrite.
+Enable it once per clone:
+
+```bash
+git config merge.ours.driver true
+```
+
+Upstream UI features are ported by hand when wanted.
+
 ## Acknowledgements
+
+This fork builds on [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp)
+by Pascal (Serveurperso) — the engine, pipelines, and GGML backend work are
+upstream's. The STORM sampler core is © Alexander Allan (MDMAchine), GPL v3,
+see `THIRD_PARTY_NOTICES.md`. Extra solver math adapted from published work
+cited in the source.
 
 Independent C++ implementation based on
 [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) by ACE Studio and StepFun.

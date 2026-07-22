@@ -5,9 +5,11 @@ build/
 tests/*/
 
 checkpoints/
-models/*.gguf
-adapters/*/
-adapters/*.safetensors
+# weight folders: everything local stays local (only the READMEs are tracked)
+models/*
+!models/README.md
+adapters/*
+!adapters/README.md
 __pycache__/
 node_modules/
 tools/webui/dist/
