@@ -27,3 +27,10 @@ target_include_directories(test-storm-solver PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(NOT MSVC)
     target_link_libraries(test-storm-solver PRIVATE m)
 endif()
+
+# test-flac: flacenc encode -> dr_flac decode bit-exact round trip.
+add_executable(test-flac test-flac.cpp)
+target_include_directories(test-flac PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
+if(NOT MSVC)
+    target_link_libraries(test-flac PRIVATE m)
+endif()

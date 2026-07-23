@@ -41,10 +41,10 @@ int main(int argc, char ** argv) {
         fprintf(stderr,
                 "Usage: %s -i <input> -o <output> [options]\n"
                 "\n"
-                "  -i <path>     Input file (WAV or MP3)\n"
-                "  -o <path>     Output file (WAV or MP3)\n"
+                "  -i <path>     Input file (WAV, FLAC or MP3)\n"
+                "  -o <path>     Output file (WAV, FLAC or MP3)\n"
                 "  -b <kbps>     Bitrate for MP3 encoding (default: 128)\n"
-                "  --format <fmt>  WAV format: wav16, wav24, wav32 (default: wav16)\n"
+                "  --format <fmt>  Sample format: wav16, wav24, wav32, flac16, flac24 (default: wav16)\n"
                 "\n"
                 "Mode is auto-detected from output extension.\n"
                 "\n"
@@ -70,8 +70,8 @@ int main(int argc, char ** argv) {
         } else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
             bitrate = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--format") == 0 && i + 1 < argc) {
-            bool dummy_mp3;
-            if (!audio_parse_format(argv[++i], dummy_mp3, wav_fmt)) {
+            AudioCodec dummy_codec;
+            if (!audio_parse_format(argv[++i], dummy_codec, wav_fmt)) {
                 fprintf(stderr, "[MP3-Codec] Unknown format: %s\n", argv[i]);
                 return 1;
             }
@@ -93,15 +93,17 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    // write output (WAV or MP3, auto-detected from extension)
+    // write output (WAV, FLAC or MP3, auto-detected from extension)
     bool ok;
     if (ends_with(output, ".mp3")) {
         ok = audio_write_mp3(output, audio, T, sr, bitrate);
     } else if (ends_with(output, ".wav")) {
         ok = audio_write_wav(output, audio, T, sr, wav_fmt);
+    } else if (ends_with(output, ".flac")) {
+        ok = audio_write_flac(output, audio, T, sr, wav_fmt);
     } else {
         fprintf(stderr, "[MP3-Codec] Cannot determine format from output extension\n");
-        fprintf(stderr, "  use .mp3 for encoding, .wav for decoding\n");
+        fprintf(stderr, "  use .mp3, .wav or .flac\n");
         free(audio);
         return 1;
     }

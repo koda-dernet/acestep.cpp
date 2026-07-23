@@ -174,11 +174,11 @@ int main(int argc, char ** argv) {
         }
     }
 
-    // Resolve output_format to (is_mp3, wav_fmt).
-    bool      is_mp3  = true;
-    WavFormat wav_fmt = WAV_S16;
-    if (!audio_parse_format(reqs[0].output_format.c_str(), is_mp3, wav_fmt)) {
-        fprintf(stderr, "[Ace-Synth] FATAL: invalid output_format '%s' (use: mp3, wav16, wav24, wav32)\n",
+    // Resolve output_format to (codec, depth).
+    AudioCodec out_codec = AUDIO_CODEC_MP3;
+    WavFormat  wav_fmt   = WAV_S16;
+    if (!audio_parse_format(reqs[0].output_format.c_str(), out_codec, wav_fmt)) {
+        fprintf(stderr, "[Ace-Synth] FATAL: invalid output_format '%s' (use: mp3, wav16, wav24, wav32, flac16, flac24)\n",
                 reqs[0].output_format.c_str());
         return 1;
     }
@@ -319,7 +319,7 @@ int main(int argc, char ** argv) {
         if (!all_audio[b].samples) {
             continue;
         }
-        const char * ext = is_mp3 ? ".mp3" : ".wav";
+        const char * ext = audio_codec_ext(out_codec);
         char         out_path[1024];
         snprintf(out_path, sizeof(out_path), "%s%d%s", all_basenames[b].c_str(), all_synth_indices[b], ext);
         if (!audio_write(out_path, all_audio[b].samples, all_audio[b].n_samples, 48000, groups[0][b].mp3_bitrate,

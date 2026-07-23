@@ -351,8 +351,8 @@
 			return;
 		}
 
-		// MP3 or WAV: create song card (audio only, use Scan on the card for metadata)
-		if (ext === 'mp3' || ext === 'wav') {
+		// MP3, WAV or FLAC: create song card (audio only, use Scan on the card for metadata)
+		if (ext === 'mp3' || ext === 'wav' || ext === 'flac') {
 			openAudio(file, ext);
 			return;
 		}
@@ -367,9 +367,9 @@
 
 	async function openAudio(file: File, ext: string) {
 		const blob = new Blob([await file.arrayBuffer()], {
-			type: ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
+			type: ext === 'wav' ? 'audio/wav' : ext === 'flac' ? 'audio/flac' : 'audio/mpeg'
 		});
-		const name = file.name.replace(/\.(mp3|wav)$/i, '') || 'Imported';
+		const name = file.name.replace(/\.(mp3|wav|flac)$/i, '') || 'Imported';
 		const song: Song = {
 			name,
 			format: ext,
@@ -725,7 +725,7 @@
 <form class="form ace-neutral-fields" onsubmit={(e) => e.preventDefault()}>
 	<input
 		type="file"
-		accept=".json,.mp3,.wav,.vae"
+		accept=".json,.mp3,.wav,.flac,.vae"
 		bind:this={fileInput}
 		onchange={onFileSelected}
 		hidden
@@ -1179,6 +1179,12 @@
 			>
 			<Chip variant="input" selected={app.format === 'wav32'} onclick={() => (app.format = 'wav32')}
 				>WAV32</Chip
+			>
+			<Chip variant="input" selected={app.format === 'flac16'} onclick={() => (app.format = 'flac16')}
+				>FLAC16</Chip
+			>
+			<Chip variant="input" selected={app.format === 'flac24'} onclick={() => (app.format = 'flac24')}
+				>FLAC24</Chip
 			>
 		</div>
 	</div>

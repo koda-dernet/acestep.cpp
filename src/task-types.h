@@ -64,7 +64,10 @@ inline constexpr const char * LM_MODE_NAME_INSPIRE  = "inspire";
 inline constexpr const char * LM_MODE_NAME_FORMAT   = "format";
 
 // Audio output format names (JSON field output_format)
-inline constexpr const char * OUTPUT_FORMAT_MP3   = "mp3";
+inline constexpr const char * OUTPUT_FORMAT_MP3    = "mp3";
+inline constexpr const char * OUTPUT_FORMAT_FLAC16 = "flac16";
+inline constexpr const char * OUTPUT_FORMAT_FLAC24 = "flac24";
+inline constexpr const char * OUTPUT_FORMAT_FLAC   = "flac";  // alias for flac24
 inline constexpr const char * OUTPUT_FORMAT_WAV16 = "wav16";
 inline constexpr const char * OUTPUT_FORMAT_WAV24 = "wav24";
 inline constexpr const char * OUTPUT_FORMAT_WAV32 = "wav32";
